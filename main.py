@@ -24,14 +24,14 @@ SESSION_TTL = 8 * 3600
 
 STATUSES = [("online", "Online"), ("maintenance", "Maintenance"), ("offline", "Offline")]
 STATUS_LABEL = dict(STATUSES)
+PUBLIC_LABEL = {"online": "Online", "maintenance": "Under maintenance", "offline": "Offline"}
 
 DEFAULTS = {
     "name": "Void",
     "about": (
-        "I'm a developer who builds Discord bots, dashboards and tools for communities.\n\n"
-        "Donut and Pixel are my two biggest projects. Donut is a dashboard and Discord bot "
-        "built around the Donut network, and Pixel is a full community bot with tickets, "
-        "giveaways, moderation and staff tools. Both are built, run and updated by me."
+        "I build Discord bots, dashboards and automation for online communities.\n\n"
+        "Donut and Pixel are the two biggest. I design them, write them, host them "
+        "and fix them when something breaks."
     ),
     "email": "",
     "discord": "",
@@ -162,7 +162,7 @@ main{flex:1}
 /* hero */
 .hero{position:relative;overflow:hidden;border-bottom:1px solid var(--line)}
 .hero-in{position:relative;z-index:2;padding-block:clamp(4rem,11vw,9rem) var(--s8)}
-h1{font:800 clamp(3.1rem,10.4vw,9.5rem)/.9 var(--display);letter-spacing:-.035em}
+h1{font:800 clamp(1.6rem,8.2vw,7.5rem)/.92 var(--display);letter-spacing:-.035em}
 h1 .ln{display:block;overflow:hidden;padding-bottom:.1em;margin-bottom:-.1em}
 h1 .ln>span{display:block}
 .hero-foot{margin-top:clamp(3rem,8vw,6.5rem);display:grid;grid-template-columns:minmax(0,26rem) minmax(0,34rem);justify-content:space-between;gap:var(--s7);align-items:end}
@@ -206,8 +206,11 @@ h2{font:800 clamp(2.25rem,5.2vw,4.5rem)/.98 var(--display);letter-spacing:-.03em
 .p-copy{position:sticky;top:calc(var(--bar) + var(--s6))}
 h3{font:800 clamp(3rem,6.4vw,6rem)/.9 var(--display);letter-spacing:-.04em;margin:var(--s4) 0 var(--s5)}
 .desc{font-size:1.1875rem;line-height:1.6;color:var(--muted);max-width:28em}
-.feats{list-style:none;margin:var(--s6) 0 var(--s6);max-width:28rem}
-.feats li{display:flex;justify-content:space-between;gap:var(--s4);border-top:1px solid var(--line);padding:var(--s3) 0;font-weight:600}
+.feats{list-style:none;margin:var(--s6) 0 var(--s6);max-width:34rem}
+.feats li{display:grid;grid-template-columns:9.5rem 1fr;gap:var(--s4);border-top:1px solid var(--line);padding:var(--s3) 0;font-weight:600}
+.feats li span{font-weight:400;color:var(--muted)}
+.cta{display:flex;align-items:center;gap:var(--s5);flex-wrap:wrap}
+.host{color:var(--muted);font-size:.9375rem}
 .feats li:last-child{border-bottom:1px solid var(--line)}
 .btn{display:inline-flex;align-items:center;gap:var(--s3);background:var(--violet);color:var(--void);font:700 1rem/1 var(--body);
 padding:1.05rem 1.4rem;border:1px solid var(--violet);border-radius:var(--r);cursor:pointer;transition:background .2s,color .2s,border-color .2s}
@@ -247,7 +250,8 @@ padding:1.05rem 1.4rem;border:1px solid var(--violet);border-radius:var(--r);cur
 /* contact */
 .contact{border-top:1px solid var(--line)}
 .contact-in{padding-block:var(--s9)}
-.contact h2{margin-bottom:var(--s7)}
+.contact h2{margin-bottom:var(--s4)}
+.contact .sub{color:var(--muted);font-size:1.1875rem;max-width:26em;margin-bottom:var(--s7)}
 .links a{display:flex;justify-content:space-between;align-items:baseline;gap:var(--s5);border-top:1px solid var(--line-2);padding:var(--s5) 0;
 font:700 clamp(1.5rem,5vw,3.75rem)/1.1 var(--display);letter-spacing:-.025em;overflow-wrap:anywhere;transition:color .2s,padding .3s}
 .links a:last-child{border-bottom:1px solid var(--line-2)}
@@ -304,7 +308,7 @@ textarea{min-height:12rem;resize:vertical;line-height:1.55}
 :root{--bar:4rem}
 .site-head nav{gap:var(--s4)}
 .live a{grid-template-columns:1fr auto 1rem}
-.focus li{grid-template-columns:1fr;gap:var(--s1)}
+.focus li,.feats li{grid-template-columns:1fr;gap:var(--s1)}
 .row{grid-template-columns:1fr}
 .links small{display:none}
 .foot-row{flex-direction:column;align-items:flex-start}
@@ -366,11 +370,11 @@ def shot_file(key):
 
 
 def status_html(status):
-    return f'<span class="st st-{status}">{E(STATUS_LABEL[status])}</span>'
+    return f'<span class="st st-{status}">{E(PUBLIC_LABEL[status])}</span>'
 
 
 def project(key, flip, url, host, fallback, name, status, desc, chips):
-    feats = "".join(f"<li>{E(c)}</li>" for c in chips)
+    feats = "".join(f"<li>{E(n)}<span>{E(d)}</span></li>" for n, d in chips)
     f = shot_file(key)
     if f:
         art = (f'<a class="shot" href="{url}" aria-label="Open the {name} dashboard">'
@@ -380,7 +384,7 @@ def project(key, flip, url, host, fallback, name, status, desc, chips):
     return (
         f'<article class="project{" flip" if flip else ""}" id="{key}"><div class="wrap project-in"><div class="p-copy">'
         f'{status_html(status)}<h3>{name}</h3><p class="desc">{desc}</p><ul class="feats" aria-label="{name} features">{feats}</ul>'
-        f'<a class="btn" href="{url}">Open {host}{ARROW}</a></div>'
+        f'<div class="cta"><a class="btn" href="{url}">Open dashboard{ARROW}</a><span class="host">{host}</span></div></div>'
         f'<div class="p-art">{art}</div></div></article>'
     )
 
@@ -404,15 +408,19 @@ def home_page(s):
         links += f'<a href="{E(s["discord"])}" rel="noopener" target="_blank"><span>{E(s["discord"].replace("https://", ""))}</span><small>Discord</small></a>'
     donut = project(
         "donut", False, "https://donut.voidlabs.fun", "donut.voidlabs.fun", DONUT_ART, "Donut", s["donut_status"],
-        "A Discord bot and web dashboard for the Donut network. Player stats, payments, chat logs and admin tooling, all in one place.",
-        ["Player stats", "Payments", "AI chat", "Chat logs", "Admin dashboard"],
+        "The bot and dashboard behind the Donut network. Players, payments and chat in one place, with admin tools to match.",
+        [("Player stats", "Every player, on the web."), ("Payments", "Tracked in one place."),
+         ("AI chat", "Built into the bot."), ("Chat logs", "A record of what was said."),
+         ("Admin dashboard", "Staff controls, online.")],
     )
     pixel = project(
         "pixel", True, "https://pixel.voidlabs.fun", "pixel.voidlabs.fun", PIXEL_ART, "Pixel", s["pixel_status"],
-        "An all-in-one community bot with tickets, giveaways, applications, moderation and a full web dashboard.",
-        ["Tickets", "Giveaways", "Applications", "Moderation", "Staff tools"],
+        "A community bot that covers the daily work of running a server, with a full web dashboard to manage it.",
+        [("Tickets", "Support requests, tracked."), ("Giveaways", "Start, run and draw."),
+         ("Applications", "Collect and review them."), ("Moderation", "Tools to keep order."),
+         ("Staff tools", "For the people on your team.")],
     )
-    nav = '<a href="#projects">Projects</a><a href="#about">About</a>' + ('<a href="#contact">Contact</a>' if has_contact else "")
+    nav = '<a href="#projects">Work</a><a href="#about">About</a>' + ('<a href="#contact">Contact</a>' if has_contact else "")
     live = "".join(
         f'<li><a href="#{k}"><span class="nm">{n}</span>{status_html(s[k + "_status"])}'
         '<svg class="arr" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><path d="M10 3v13M4 11l6 6 6-6"/></svg></a></li>'
@@ -421,45 +429,45 @@ def home_page(s):
     contact = ""
     if has_contact:
         contact = (
-            '<section class="contact" id="contact"><div class="wrap contact-in"><h2>Get in touch</h2>'
+            '<section class="contact" id="contact"><div class="wrap contact-in"><h2>Say hello.</h2><p class="sub">Questions, bug reports or an idea for a bot. Email or Discord both work.</p>'
             f'<div class="links">{links}</div></div></section>'
         )
-    foot_nav = '<a href="#projects">Projects</a><a href="#about">About</a>' + ('<a href="#contact">Contact</a>' if has_contact else "")
+    foot_nav = '<a href="#projects">Work</a><a href="#about">About</a>' + ('<a href="#contact">Contact</a>' if has_contact else "")
     body = (
         '<section class="hero"><div class="orbit" aria-hidden="true"><i></i><div class="in"><i></i></div></div>'
-        '<div class="wrap hero-in"><h1><span class="ln"><span>Things</span></span><span class="ln"><span>built in</span></span>'
-        '<span class="ln"><span>the void.</span></span></h1>'
-        '<div class="hero-foot"><p class="lede"><b>Void Labs is an independent software studio.</b> Discord bots and web dashboards for online communities, designed, built and maintained in-house.</p>'
+        '<div class="wrap hero-in"><h1><span class="ln"><span>Bots and</span></span><span class="ln"><span>dashboards,</span></span>'
+        '<span class="ln"><span>built right.</span></span></h1>'
+        '<div class="hero-foot"><p class="lede"><b>Void Labs is a one-person studio.</b> I design, build and run Discord bots and the dashboards behind them.</p>'
         f'<ul class="live" aria-label="Products and their status">{live}</ul></div></div></section>'
-        '<section id="projects"><div class="wrap sec-head"><h2>Two products, built end to end.</h2>'
-        '<p>Each one has its own bot and web dashboard.</p></div>'
+        '<section id="projects"><div class="wrap sec-head"><h2>Donut and Pixel.</h2>'
+        '<p>Two Discord bots, each with its own web dashboard. Built, hosted and maintained by me.</p></div>'
         f'{donut}{pixel}</section>'
-        '<section class="about" id="about"><div class="wrap about-in"><h2>About Void Labs</h2><div>'
-        '<p class="statement">Software, Discord bots, dashboards and automation for online communities, built by one person and kept running.</p>'
-        '<ul class="focus"><li><strong>Software</strong><span>Designed, built, run and updated in-house.</span></li>'
-        '<li><strong>Discord bots</strong><span>Tickets, giveaways, applications and moderation.</span></li>'
-        '<li><strong>Dashboards</strong><span>Player stats, payments, chat logs and staff tools on the web.</span></li>'
-        '<li><strong>Automation</strong><span>The repeat work of running a community, handled for you.</span></li></ul>'
+        '<section class="about" id="about"><div class="wrap about-in"><h2>About</h2><div>'
+        '<p class="statement">One developer, one studio, and software I&rsquo;m happy to keep running.</p>'
+        '<ul class="focus"><li><strong>Software</strong><span>Written, hosted and maintained by me.</span></li>'
+        '<li><strong>Discord bots</strong><span>Moderation, tickets, giveaways, applications.</span></li>'
+        '<li><strong>Dashboards</strong><span>The web side of every bot: stats, logs, staff controls.</span></li>'
+        '<li><strong>Automation</strong><span>The repetitive parts of running a community, handled.</span></li></ul>'
         f'<div class="bio"><h3>Hi, I&rsquo;m {E(s["name"])}.</h3>{paras}</div></div></div></section>'
         f'{contact}'
     )
     foot = (
         '<footer class="site-foot"><div class="wrap foot-row">'
-        f'<span>&copy; {time.gmtime().tm_year} Void Labs &middot; Independent software studio</span><nav aria-label="Footer">{foot_nav}</nav></div></footer>'
+        f'<span>&copy; {time.gmtime().tm_year} Void Labs. Built in the void.</span><nav aria-label="Footer">{foot_nav}</nav></div></footer>'
     )
-    return HEAD.format(title="Void Labs", css=CSS, meta='<meta name="description" content="Void Labs builds Discord bots and web dashboards. Home of Donut and Pixel.">') + page_shell(nav, body, foot)
+    return HEAD.format(title="Void Labs | Bots and dashboards", css=CSS, meta='<meta name="description" content="Void Labs is a one-person software studio. Discord bots and web dashboards, including Donut and Pixel.">') + page_shell(nav, body, foot)
 
 
 def admin_login_page(msg=""):
     m = f'<div class="msg err" role="alert">{E(msg)}</div>' if msg else ""
     body = (
-        f'<body><main class="gate"><div><a class="mark" href="/">{LOGO}Void Labs</a><div class="panel"><h1>Admin login</h1>'
+        f'<body><main class="gate"><div><a class="mark" href="/">{LOGO}Void Labs</a><div class="panel"><h1>Admin</h1>'
         f'{m}<form method="post" action="/admin/login" autocomplete="on">'
         '<label for="u" style="margin-top:0">Username</label><input id="u" name="username" autocomplete="username" required>'
         '<label for="p">Password</label><input id="p" name="password" type="password" autocomplete="current-password" required>'
         '<button class="btn" type="submit">Log in</button></form></div></div></main></body></html>'
     )
-    return HEAD.format(title="Admin login", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
+    return HEAD.format(title="Admin", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
 
 
 def admin_page(s, csrf, msg="", kind="ok"):
@@ -475,7 +483,7 @@ def admin_page(s, csrf, msg="", kind="ok"):
         f'<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{csrf}">'
         '<button class="btn ghost sm" type="submit">Log out</button></form></div></header>'
         '<main id="top"><div class="wrap admin-grid">'
-        f'<aside class="admin-side"><h1>Site settings</h1><p>Changes go live on the public site as soon as you save.</p><ul aria-label="Current status">{live}</ul></aside>'
+        f'<aside class="admin-side"><h1>Site settings</h1><p>Edits appear on the public site as soon as you save.</p><ul aria-label="Current status">{live}</ul></aside>'
         f'<div>{m}<form method="post" action="/admin/save"><input type="hidden" name="csrf" value="{csrf}">'
         '<fieldset><legend>Product status</legend><div class="row"><div><label for="ds">Donut status</label>'
         f'<select id="ds" name="donut_status">{opts(s["donut_status"])}</select></div>'
@@ -484,9 +492,9 @@ def admin_page(s, csrf, msg="", kind="ok"):
         '<fieldset><legend>Public profile</legend>'
         '<label for="n" style="margin-top:0">Your name <span class="hint">(shown in &ldquo;Hi, I&rsquo;m &hellip;&rdquo;)</span></label>'
         f'<input id="n" name="name" maxlength="40" value="{E(s["name"])}" required>'
-        '<label for="e">Contact email <span class="hint">(leave empty to hide)</span></label>'
+        '<label for="e">Contact email <span class="hint">(hidden if empty)</span></label>'
         f'<input id="e" name="email" type="email" maxlength="120" value="{E(s["email"])}" placeholder="you@example.com">'
-        '<label for="d">Support Discord <span class="hint">(leave empty to hide)</span></label>'
+        '<label for="d">Support Discord <span class="hint">(hidden if empty)</span></label>'
         f'<input id="d" name="discord" maxlength="80" value="{E(s["discord"])}" placeholder="discord.gg/yourcode">'
         '<label for="a">About me <span class="hint">(blank line = new paragraph)</span></label>'
         f'<textarea id="a" name="about" maxlength="1500">{E(s["about"])}</textarea></fieldset>'
@@ -503,8 +511,8 @@ NOT_ENABLED = HEAD.format(title="Admin disabled", css=CSS, meta='<meta name="rob
 
 NOT_FOUND = HEAD.format(title="Not found", css=CSS, meta="") + (
     f'<body><header class="site-head"><div class="wrap"><a class="mark" href="/">{LOGO}Void Labs</a></div></header>'
-    '<main class="lost" id="top"><div class="wrap"><h1>404</h1><p>This page is not here.</p>'
-    f'<a class="btn" href="/">Back to Void Labs{ARROW}</a></div></main></body></html>'
+    '<main class="lost" id="top"><div class="wrap"><h1>404</h1><p>Nothing here.</p>'
+    f'<a class="btn" href="/">Go home{ARROW}</a></div></main></body></html>'
 )
 
 
@@ -644,7 +652,7 @@ class Handler(BaseHTTPRequestHandler):
             if err:
                 return self.send(400, admin_page(clean, csrf_for(tok), err, "err"), private=True)
             save(clean)
-            return self.send(200, admin_page(clean, csrf_for(tok), "Saved. The public site is updated.", "ok"), private=True)
+            return self.send(200, admin_page(clean, csrf_for(tok), "Saved. Your changes are live.", "ok"), private=True)
         self.send(404, "Not found", "text/plain")
 
 
