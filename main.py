@@ -127,13 +127,13 @@ def same(a, b):
 # ---------- pages ----------
 # Design system: near-black studio, electric violet accent, restrained blue secondary. Flat: no glows, no gradients.
 # Spacing scale: 4 8 12 16 24 32 48 72 112 176 (--s1..--s10). One radius (2px). Hairlines carry structure.
-# Type: Syne (display, wide + distinctive) / Hanken Grotesk (text). Sentence case throughout.
+# Type: Schibsted Grotesk (display, tight editorial grotesk) / Hanken Grotesk (text). Sentence case throughout.
 CSS = """
 :root{
 --void:#0b0b0f;--char:#141419;--raised:#1b1b22;--line:#2a2a33;--line-2:#3a3a46;
 --text:#ececf1;--muted:#a1a1b0;--violet:#8f6bff;--violet-text:#a78bfa;--blue:#7fa3ff;
 --ok:#4ade80;--warn:#fbbf24;--bad:#f87171;
---display:"Syne","Arial Black",system-ui,sans-serif;
+--display:"Schibsted Grotesk","Helvetica Neue",Arial,system-ui,sans-serif;
 --body:"Hanken Grotesk",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
 --s1:.25rem;--s2:.5rem;--s3:.75rem;--s4:1rem;--s5:1.5rem;--s6:2rem;--s7:3rem;--s8:4.5rem;--s9:7rem;--s10:11rem;
 --gutter:clamp(1.25rem,4.5vw,3.5rem);--bar:4.5rem;--r:2px}
@@ -162,7 +162,7 @@ main{flex:1}
 /* hero */
 .hero{position:relative;overflow:hidden;border-bottom:1px solid var(--line)}
 .hero-in{position:relative;z-index:2;padding-block:clamp(4rem,11vw,9rem) var(--s8)}
-h1{font:800 clamp(1.6rem,8.2vw,7.5rem)/.92 var(--display);letter-spacing:-.035em}
+h1{font:800 clamp(2.6rem,11vw,10rem)/.9 var(--display);letter-spacing:-.045em}
 h1 .ln{display:block;overflow:hidden;padding-bottom:.1em;margin-bottom:-.1em}
 h1 .ln>span{display:block}
 .hero-foot{margin-top:clamp(3rem,8vw,6.5rem);display:grid;grid-template-columns:minmax(0,26rem) minmax(0,34rem);justify-content:space-between;gap:var(--s7);align-items:end}
@@ -197,14 +197,14 @@ h1 .ln:nth-child(2)>span{animation-delay:.09s}h1 .ln:nth-child(3)>span{animation
 
 /* projects */
 .sec-head{padding-block:var(--s9) var(--s7);display:flex;justify-content:space-between;align-items:end;gap:var(--s6);flex-wrap:wrap}
-h2{font:800 clamp(2.25rem,5.2vw,4.5rem)/.98 var(--display);letter-spacing:-.03em}
+h2{font:800 clamp(2.5rem,6vw,5rem)/.95 var(--display);letter-spacing:-.04em}
 .sec-head p{color:var(--muted);max-width:24em}
 .project{border-top:1px solid var(--line);padding-block:var(--s8)}
 .project-in{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:var(--s7) clamp(2rem,6vw,6rem);align-items:start}
 .project.flip .project-in{grid-template-columns:minmax(0,7fr) minmax(0,5fr)}
 .project.flip .p-copy{order:2}
 .p-copy{position:sticky;top:calc(var(--bar) + var(--s6))}
-h3{font:800 clamp(3rem,6.4vw,6rem)/.9 var(--display);letter-spacing:-.04em;margin:var(--s4) 0 var(--s5)}
+h3{font:800 clamp(3.25rem,7vw,6.5rem)/.9 var(--display);letter-spacing:-.045em;margin:var(--s4) 0 var(--s5)}
 .desc{font-size:1.1875rem;line-height:1.6;color:var(--muted);max-width:28em}
 .feats{list-style:none;margin:var(--s6) 0 var(--s6);max-width:34rem}
 .feats li{display:grid;grid-template-columns:9.5rem 1fr;gap:var(--s4);border-top:1px solid var(--line);padding:var(--s3) 0;font-weight:600}
@@ -266,7 +266,7 @@ font:700 clamp(1.5rem,5vw,3.75rem)/1.1 var(--display);letter-spacing:-.025em;ove
 .panel{background:var(--char);border:1px solid var(--line-2);border-radius:var(--r);padding:clamp(1.25rem,3vw,2rem)}
 .admin-grid{display:grid;grid-template-columns:minmax(0,18rem) minmax(0,1fr);gap:var(--s7);padding-block:var(--s7) var(--s8);align-items:start}
 .admin-side{position:sticky;top:calc(var(--bar) + var(--s5))}
-.admin-side h1{font-size:clamp(1.9rem,2.9vw,2.4rem);overflow-wrap:anywhere;line-height:1.05;letter-spacing:-.03em;margin-bottom:var(--s5)}
+.admin-side h1{font-size:clamp(2.25rem,4vw,3.25rem);overflow-wrap:anywhere;line-height:.98;letter-spacing:-.03em;margin-bottom:var(--s5)}
 .admin-side p{color:var(--muted);margin-bottom:var(--s4);max-width:22em}
 .admin-side ul{list-style:none;margin:var(--s5) 0}
 .admin-side li{display:flex;align-items:center;justify-content:space-between;gap:var(--s3);padding:var(--s3) 0;border-top:1px solid var(--line-2);font-weight:600}
@@ -321,7 +321,7 @@ HEAD = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="theme-color" content="#0b0b0f">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230b0b0f'/><circle cx='50' cy='50' r='34' fill='none' stroke='%238f6bff' stroke-width='6'/><circle cx='50' cy='16' r='9' fill='%238f6bff'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Syne:wght@600..800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Schibsted+Grotesk:wght@600..800&display=swap" rel="stylesheet">
 <style>{css}</style><script src="/app.js"></script></head>"""
 
 E = html.escape
