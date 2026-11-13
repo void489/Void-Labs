@@ -125,434 +125,273 @@ def same(a, b):
 
 
 # ---------- pages ----------
+# Design system: Klein-blue "void" field, pink (Donut) and sun-yellow (Pixel) product panels.
+# Spacing scale: 4 8 12 16 24 32 48 72 112 (--s1..--s9). Radii: pill for actions, 6px for inputs, 0 for panels.
 CSS = """
 :root{
---paper:#f6f5f1;--card:#ffffff;--ink:#15140f;--muted:#6b665b;--faint:#989284;
---line:#e2ded5;--line-2:#cdc7b9;--accent:#1d4d3e;--accent-soft:rgba(29,77,62,.1);
---donut:#a44d68;--pixel:#33637a;--ok:#2f7d54;--warn:#9a6b1a;--bad:#a8453c;
---sans:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
---mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+--blue:#2a2fe0;--blue-deep:#1a1eb0;--ink:#0c0d2e;--pale:#eceefa;--paper:#ffffff;
+--pink:#ff9dbb;--sun:#ffd13d;--muted:#454766;--line:rgba(12,13,46,.22);
+--ok:#0a7a45;--warn:#9a6200;--bad:#b3261e;--focus:var(--blue);
+--display:"Bricolage Grotesque","Arial Narrow",system-ui,sans-serif;
+--body:"Figtree",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+--s1:.25rem;--s2:.5rem;--s3:.75rem;--s4:1rem;--s5:1.5rem;--s6:2rem;--s7:3rem;--s8:4.5rem;--s9:7rem;
+--gutter:clamp(1.25rem,4vw,3rem);--bar:4rem}
 *{box-sizing:border-box;margin:0;padding:0}
-html{background:var(--paper);-webkit-text-size-adjust:100%}
-body{font-family:var(--sans);color:var(--ink);background:var(--paper);line-height:1.55;font-size:16px;
-min-height:100vh;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased}
+html{background:var(--blue);-webkit-text-size-adjust:100%;scroll-padding-top:var(--bar)}
+@media(prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
+body{font-family:var(--body);color:var(--ink);background:var(--pale);line-height:1.6;font-size:1.0625rem;
+min-height:100vh;min-height:100svh;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased}
 a{color:inherit;text-decoration:none}
-::selection{background:var(--accent);color:#fff}
-:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:2px}
+::selection{background:var(--sun);color:var(--ink)}
+:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+.on-dark{--focus:var(--sun)}
 main{flex:1}
-.wrap{width:100%;max-width:1040px;margin:0 auto;padding-left:clamp(1.25rem,5vw,2.5rem);padding-right:clamp(1.25rem,5vw,2.5rem)}
-header{position:sticky;top:0;z-index:20;background:var(--paper);border-bottom:1px solid var(--line)}
-header .wrap{display:flex;align-items:center;justify-content:space-between;gap:1rem;height:60px}
-.mark{display:inline-flex;align-items:center;gap:.55rem;font-size:.9375rem;font-weight:600;letter-spacing:-.01em;text-decoration:none}
-.mark .dot{width:.7rem;height:.7rem;border-radius:50%;border:1.5px solid var(--ink);flex:none}
-nav.top{display:flex;gap:clamp(.9rem,2.5vw,1.75rem)}
-nav.top a{font:500 10.5px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);
-padding:.4rem 0;border-bottom:1px solid transparent;transition:color .2s,border-color .2s}
-nav.top a:hover{color:var(--ink);border-color:var(--line-2)}
-.hero{border-top:0;padding-top:clamp(3.5rem,9vw,6.5rem);padding-bottom:clamp(2.5rem,6vw,4rem)}
-.eyebrow{display:flex;align-items:center;gap:.75rem;font:500 10.5px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
-.eyebrow::before{content:"";width:1.75rem;height:1px;background:var(--line-2)}
-h1{margin-top:1.5rem;font-size:clamp(2.6rem,7.4vw,5.5rem);font-weight:600;letter-spacing:-.045em;line-height:.96;max-width:18ch;text-wrap:balance}
-.lede{margin-top:1.6rem;max-width:54ch;color:var(--muted);font-size:clamp(1rem,1.6vw,1.125rem);line-height:1.65}
-.hero-meta{margin-top:clamp(2rem,5vw,3.25rem);padding-top:1rem;border-top:1px solid var(--line);
-display:flex;flex-wrap:wrap;gap:.4rem 2.5rem;font:400 10.5px/1.6 var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--faint)}
-section{border-top:1px solid var(--line);padding:clamp(2.5rem,6vw,4.5rem) 0}
-.sec-head{display:flex;align-items:baseline;justify-content:space-between;gap:1.5rem;margin-bottom:clamp(1.5rem,3vw,2.5rem)}
-h2{font-size:clamp(1.4rem,2.6vw,1.75rem);font-weight:600;letter-spacing:-.03em;line-height:1.2}
-.sec-label{font:500 10.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--faint);white-space:nowrap}
-.projects{display:flex;flex-direction:column;border-top:1px solid var(--line-2)}
-.project{display:grid;grid-template-columns:3rem minmax(0,1fr) auto;gap:clamp(1rem,3vw,2.5rem);align-items:start;
-padding:clamp(1.5rem,3vw,2rem) .75rem;margin:0 -.75rem;border-bottom:1px solid var(--line);border-radius:8px;transition:background .25s ease}
-.project:hover,.project:focus-visible{background:var(--card)}
-.idx{font:400 10.5px/1.7 var(--mono);letter-spacing:.08em;color:var(--faint);padding-top:.35rem}
-.project-head{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap}
-.badge{width:1.5rem;height:1.5rem;flex:none}
-.donut{border-radius:50%;background:radial-gradient(circle at 50% 50%,var(--paper) 0 26%,var(--donut) 28% 100%)}
-.pixel{display:grid;grid-template-columns:repeat(4,1fr);gap:2px}
-.pixel b{background:var(--pixel);opacity:.16;border-radius:1px}.pixel b.on{opacity:1}
-.name{font-size:clamp(1.2rem,2vw,1.4rem);font-weight:600;letter-spacing:-.025em}
-.status{display:inline-flex;align-items:center;gap:.35rem;font:500 9.5px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase}
-.status::before{content:"";width:4px;height:4px;border-radius:50%;background:currentColor}
-.s-online{color:var(--ok)}.s-maintenance{color:var(--warn)}.s-offline{color:var(--bad)}
-.desc{margin-top:.5rem;color:var(--muted);font-size:.9375rem;line-height:1.6;max-width:56ch}
-.meta{margin-top:.75rem;font:400 10.5px/1.7 var(--mono);letter-spacing:.04em;color:var(--faint);text-transform:uppercase}
-.host{display:inline-flex;align-items:center;gap:.4rem;font:400 11px/1 var(--mono);color:var(--muted);padding-top:.35rem;white-space:nowrap}
-.arrow{display:inline-block;transition:transform .25s ease}
-.project:hover .arrow{transform:translate(2px,-2px)}
-.sec-grid{display:grid;grid-template-columns:10rem minmax(0,1fr);gap:clamp(1.5rem,4vw,3rem);align-items:start}
-.about h2{max-width:26ch}
-.about p{margin-top:1rem;color:var(--muted);font-size:1rem;line-height:1.7;max-width:64ch}
-.about p strong{color:var(--ink);font-weight:600}
-.contact h2{max-width:22ch}
-.contact p{margin-top:1rem;color:var(--muted);max-width:56ch}
-.links{margin-top:1.25rem;display:flex;flex-direction:column;border-top:1px solid var(--line)}
-.links a{display:flex;align-items:baseline;justify-content:space-between;gap:1.5rem;padding:.9rem 0;border-bottom:1px solid var(--line);font-size:.9375rem;transition:color .2s}
-.links a span{font:400 10.5px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);flex:none}
-.links a:hover{color:var(--accent)}
-footer{margin-top:auto;border-top:1px solid var(--line);padding:1.5rem 0 2.5rem}
-footer .wrap{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;font:400 10.5px/1.7 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
-.progress{position:fixed;top:0;left:0;right:0;height:2px;z-index:50;pointer-events:none;opacity:0;transition:opacity .4s ease}
-.progress i{display:block;height:100%;width:100%;background:var(--accent);transform:scaleX(0);transform-origin:left}
-.progress.on{opacity:1}
-.js [data-reveal]{opacity:0;transform:translateY(10px);
-transition:opacity .5s ease,transform .65s cubic-bezier(.22,.61,.36,1);transition-delay:var(--d,0ms)}
-.js [data-reveal].is-in{opacity:1;transform:none}
-.cursor{position:fixed;left:0;top:0;z-index:60;width:24px;height:24px;pointer-events:none;color:var(--ink);
-opacity:0;transition:opacity .35s ease;will-change:transform;filter:drop-shadow(0 2px 2px rgba(21,20,15,.22))}
-.cursor.on{opacity:1}
-.cursor svg{display:block;width:22px;height:22px;transform-origin:4px 2px;transition:transform .12s ease}
-.cursor.down svg{transform:scale(.82)}
-.cursor.grab svg{transform:scale(.9)}
-.cursor path{fill:currentColor;stroke:var(--paper);stroke-width:1.3;stroke-linejoin:round}
-.cursor .pulse{position:absolute;left:1px;top:1px;width:12px;height:12px;border-radius:50%;border:1.5px solid var(--accent);opacity:0;transform:scale(.3)}
-.cursor .pulse.go{animation:cursorPulse .55s ease-out}
-@keyframes cursorPulse{0%{opacity:.85;transform:scale(.3)}100%{opacity:0;transform:scale(3)}}
-@media(pointer:coarse){.cursor{display:none}}
-@media(max-width:720px){.sec-grid{grid-template-columns:1fr;gap:.75rem}.sec-grid .sec-label{display:block;margin-bottom:.75rem}}
-@media(max-width:640px){
-.project{grid-template-columns:2rem minmax(0,1fr);padding-inline:.5rem;margin-inline:-.5rem}
-.host{grid-column:1/-1;padding-top:0;font-size:10.5px}
-.sec-head{flex-direction:column;gap:.35rem}.sec-head .sec-label{order:-1}}
-@media(prefers-reduced-motion:reduce){
-.js [data-reveal]{opacity:1;transform:none;transition:none}
-.progress,.cursor{display:none}.arrow{transition:none}}
-/* admin */
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:clamp(1.25rem,3vw,1.75rem);max-width:620px}
-.card h1{font-size:1.5rem;letter-spacing:-.02em;line-height:1.2;margin-bottom:1.25rem;max-width:none}
-label{display:block;font-weight:600;font-size:.875rem;margin:1rem 0 .35rem}
-.hint{color:var(--faint);font-size:.78rem;font-weight:400}
-input,textarea,select{width:100%;background:#fff;color:var(--ink);border:1px solid var(--line-2);border-radius:6px;
-padding:.6rem .7rem;font:inherit;font-size:.9375rem;transition:border-color .2s,box-shadow .2s}
-input:focus,textarea:focus,select:focus{border-color:var(--accent);outline:none;box-shadow:0 0 0 3px var(--accent-soft)}
-textarea{min-height:10rem;resize:vertical}
-.row{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
-@media(max-width:560px){.row{grid-template-columns:1fr}}
-button{margin-top:1.25rem;background:var(--ink);color:var(--paper);border:0;border-radius:6px;
-padding:.65rem 1.15rem;font:inherit;font-weight:600;font-size:.9375rem;cursor:pointer;transition:background .2s}
-button:hover{background:var(--accent)}
-button.ghost{background:transparent;color:var(--muted);border:1px solid var(--line-2);margin-top:0}
-button.ghost:hover{color:var(--ink);border-color:var(--ink);background:transparent}
-.msg{border-radius:6px;padding:.6rem .8rem;margin-bottom:1rem;font-weight:500;font-size:.875rem}
-.msg.ok{background:#e8f2ec;color:#1d5c3f}.msg.err{background:#fbebe9;color:#93392f}
-.bar{display:flex;justify-content:space-between;align-items:center;max-width:620px;margin-bottom:1rem;gap:1rem}
-.bar form{display:inline}
+.wrap{width:100%;max-width:80rem;margin:0 auto;padding-inline:var(--gutter)}
+.skip{position:absolute;left:var(--s4);top:-4rem;z-index:100;background:var(--sun);color:var(--ink);padding:var(--s2) var(--s4);font-weight:700;border-radius:999px}
+.skip:focus{top:var(--s3)}
+
+/* header */
+.site-head{position:sticky;top:0;z-index:30;background:var(--blue);color:var(--pale);height:var(--bar)}
+.site-head .wrap{height:100%;display:flex;align-items:center;justify-content:space-between;gap:var(--s4)}
+.mark{display:inline-flex;align-items:center;gap:var(--s3);font:700 1.25rem/1 var(--display);letter-spacing:-.02em}
+.mark svg{width:1.75rem;height:1.75rem;flex:none;transition:transform .5s cubic-bezier(.3,1.4,.5,1)}
+.mark:hover svg{transform:rotate(180deg)}
+.site-head nav{display:flex;gap:var(--s1)}
+.site-head nav a{font-weight:600;font-size:1rem;padding:.55rem 1rem;border-radius:999px;transition:background .2s,color .2s}
+.site-head nav a:hover{background:var(--pale);color:var(--blue-deep)}
+
+/* hero */
+.hero{position:relative;overflow:hidden;background:var(--blue);color:var(--pale);
+min-height:calc(100vh - var(--bar));min-height:calc(100svh - var(--bar));display:flex;align-items:flex-end}
+.hero-in{position:relative;z-index:2;padding-block:var(--s8) var(--s7)}
+h1{font:800 clamp(3.5rem,12.5vw,11.5rem)/.86 var(--display);letter-spacing:-.045em;font-variation-settings:"opsz" 96}
+h1 .ln{display:block;overflow:hidden;padding-bottom:.08em;margin-bottom:-.08em}
+h1 .ln>span{display:block}
+.hero-foot{margin-top:var(--s7);display:grid;grid-template-columns:minmax(0,28rem) 1fr;gap:var(--s6) var(--s8);align-items:end;
+border-top:2px solid var(--pale);padding-top:var(--s5)}
+.lede{font-size:clamp(1.125rem,1.7vw,1.375rem);line-height:1.5;max-width:30em}
+.live{list-style:none;display:flex;flex-wrap:wrap;gap:var(--s2) var(--s6);justify-content:flex-end}
+.live li{display:flex;align-items:center;gap:var(--s2);font-weight:600}
+.live li span{opacity:.82;font-weight:500}
+.disc-wrap{position:absolute;z-index:1;right:-9vw;top:50%;width:min(66vh,54vw);aspect-ratio:1;margin-top:calc(min(66vh,54vw)/-2 - 2rem);will-change:transform}
+.disc{position:absolute;inset:0;border-radius:50%;background:var(--ink)}
+.disc::after{content:"";position:absolute;inset:-6%;border-radius:50%;border:2px solid rgba(236,238,250,.35)}
+.orb{position:absolute;inset:0;animation:spin 46s linear infinite}
+.orb::after{content:"";position:absolute;left:50%;top:-1%;width:11%;aspect-ratio:1;margin-left:-5.5%}
+.o-donut::after{border-radius:50%;background:radial-gradient(circle,var(--blue) 0 26%,var(--pink) 28%)}
+.o-pixel{inset:-13%;animation-duration:70s;animation-direction:reverse}
+.o-pixel::after{background:var(--sun);width:7%;margin-left:-3.5%}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:no-preference){
+.disc{animation:discIn 1.3s cubic-bezier(.2,.8,.2,1) both}
+h1 .ln>span{animation:rise .9s cubic-bezier(.2,.8,.2,1) both}
+h1 .ln:nth-child(2)>span{animation-delay:.1s}h1 .ln:nth-child(3)>span{animation-delay:.2s}
+.hero-foot{animation:fade .8s .6s both}}
+@keyframes rise{from{transform:translateY(105%)}}
+@keyframes discIn{from{transform:scale(.55);opacity:0}}
+@keyframes fade{from{opacity:0}}
+
+/* status marks: shape + word, never colour alone */
+.st{display:inline-block;width:.8rem;height:.8rem;flex:none;border-radius:50%;background:var(--ok);box-shadow:0 0 0 2px var(--paper)}
+.st-maintenance{background:var(--warn);border-radius:1px;transform:rotate(45deg)}
+.st-offline{background:transparent;border:2px solid var(--bad);box-shadow:none}
+.on-dark .st{background:#6be3a0;box-shadow:none}.on-dark .st-maintenance{background:var(--sun)}.on-dark .st-offline{background:transparent;border-color:#ff8f86}
+.admin-side .st{background:var(--ok)}
+
+/* projects */
+.projects{background:var(--pale)}
+.sec-title{padding-block:var(--s8) var(--s7)}
+h2{font:800 clamp(2.25rem,5.6vw,4.75rem)/.95 var(--display);letter-spacing:-.035em;max-width:14ch}
+.project{display:block;position:relative;overflow:hidden}
+.p-donut{background:var(--pink)}.p-pixel{background:var(--sun)}
+.project-in{max-width:80rem;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s7) var(--s8);align-items:center;padding:var(--s8) var(--gutter)}
+.p-pixel .p-art{order:-1}
+.p-status{display:inline-flex;align-items:center;gap:var(--s2);font-weight:700;font-size:1rem}
+h3{font:800 clamp(3.5rem,9vw,8rem)/.88 var(--display);letter-spacing:-.045em;margin:var(--s4) 0 var(--s5)}
+.desc{font-size:1.1875rem;line-height:1.55;max-width:30em}
+.feats{list-style:none;margin-top:var(--s6);display:grid;grid-template-columns:1fr 1fr;column-gap:var(--s5);max-width:30rem}
+.feats li{border-top:2px solid var(--ink);padding:var(--s3) 0 var(--s3);font-weight:600}
+.btn{display:inline-flex;align-items:center;gap:var(--s3);margin:0;background:var(--ink);color:var(--pale);
+font:700 1rem/1 var(--body);padding:1.05rem 1.5rem;border-radius:999px;border:2px solid var(--ink);cursor:pointer;
+transition:background .2s,color .2s,border-color .2s}
+.p-copy .btn{margin-top:var(--s6)}
+.btn svg{width:1.1rem;height:1.1rem;transition:transform .25s cubic-bezier(.3,1.3,.5,1)}
+.project:hover .btn,.btn:hover{background:var(--blue);border-color:var(--blue)}
+.project:hover .btn svg,.btn:hover svg{transform:translate(3px,-3px)}
+.project:focus-visible{outline-offset:-6px;outline-color:var(--ink)}
+.p-art{display:flex;justify-content:center;align-items:center}
+.ring{width:min(100%,32rem);height:auto;overflow:visible}
+.ring .spin{transform-origin:220px 220px;animation:spin 80s linear infinite}
+.project:hover .ring .spin{animation-duration:24s}
+.ring text{font:700 21px var(--body);fill:var(--ink)}
+.px{display:grid;grid-template-columns:repeat(7,1fr);gap:clamp(4px,1vw,10px);width:min(100%,26rem);aspect-ratio:1}
+.px b{background:var(--ink);transition:opacity .3s}
+.px b.off{opacity:.13}
+.p-pixel:hover .px b.off{animation:blink 1.6s steps(1) infinite;animation-delay:calc(var(--i)*61ms)}
+@keyframes blink{0%{opacity:.13}50%{opacity:.7}}
+
+/* about + contact */
+.about{background:var(--ink);color:var(--pale)}
+.about-in{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s7) var(--s8);padding-block:var(--s9) var(--s8)}
+.about h2{color:var(--pale);max-width:9ch}
+.about .copy p{font-size:1.1875rem;line-height:1.65;max-width:34em}
+.about .copy p+p{margin-top:var(--s5)}
+.about .copy p:first-child{font:600 clamp(1.4rem,2.3vw,1.9rem)/1.3 var(--display);letter-spacing:-.015em}
+.contact{background:var(--ink);color:var(--pale);border-top:2px solid rgba(236,238,250,.28)}
+.contact-in{padding-block:var(--s7) var(--s9);display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s5) var(--s8)}
+.contact h2{font-size:clamp(1.75rem,3vw,2.5rem);letter-spacing:-.025em;max-width:none}
+.contact p{margin-top:var(--s3);color:#c9ccee;max-width:26em}
+.links a{display:flex;justify-content:space-between;align-items:baseline;gap:var(--s5);padding:var(--s4) 0;border-bottom:2px solid rgba(236,238,250,.28);
+font:600 clamp(1.25rem,2.4vw,1.875rem)/1.2 var(--display);letter-spacing:-.02em;overflow-wrap:anywhere;transition:color .2s,padding .25s}
+.links a:first-child{border-top:2px solid rgba(236,238,250,.28)}
+.links a small{font:600 1rem var(--body);color:#c9ccee;flex:none;letter-spacing:0}
+.links a:hover{color:var(--pink);padding-left:var(--s3)}
+
+/* footer */
+.site-foot{background:var(--blue);color:var(--pale);overflow:hidden}
+.foot-row{display:flex;justify-content:space-between;gap:var(--s4);flex-wrap:wrap;padding-block:var(--s5);font-weight:500}
+.foot-word{font:800 21.2vw/.74 var(--display);letter-spacing:-.055em;white-space:nowrap;padding:var(--s5) 0 0 calc(var(--gutter) - .04em);user-select:none;overflow:hidden}
+
+/* admin + utility pages */
+.panel{background:var(--paper);border:2px solid var(--ink);padding:clamp(1.25rem,3vw,2rem)}
+.admin-grid{display:grid;grid-template-columns:minmax(0,18rem) minmax(0,1fr);gap:var(--s7);padding-block:var(--s7) var(--s8);align-items:start}
+.admin-side{position:sticky;top:calc(var(--bar) + var(--s5))}
+.admin-side h1{font-size:clamp(2.5rem,5vw,4rem);line-height:.92;letter-spacing:-.04em;margin-bottom:var(--s5)}
+.admin-side p{color:var(--muted);margin-bottom:var(--s4);max-width:22em}
+.admin-side ul{list-style:none;margin:var(--s5) 0}
+.admin-side li{display:flex;align-items:center;gap:var(--s3);padding:var(--s3) 0;border-top:2px solid var(--ink);font-weight:600}
+.admin-side li:last-child{border-bottom:2px solid var(--ink)}
+.admin-side li span:not(.st){margin-left:auto;font-weight:500;color:var(--muted)}
+.admin-side .st{box-shadow:0 0 0 2px var(--pale)}
+fieldset{border:0;margin:0 0 var(--s7)}
+legend{font:800 1.75rem/1.1 var(--display);letter-spacing:-.025em;margin-bottom:var(--s4);padding:0}
+label{display:block;font-weight:700;font-size:1rem;margin:var(--s5) 0 var(--s2)}
+.hint{color:var(--muted);font-size:.9375rem;font-weight:500}
+input,textarea,select{width:100%;background:var(--paper);color:var(--ink);border:2px solid var(--ink);border-radius:6px;
+padding:.75rem .9rem;font:inherit;font-size:1rem;transition:box-shadow .15s}
+input:focus,textarea:focus,select:focus{outline:3px solid var(--blue);outline-offset:2px}
+textarea{min-height:12rem;resize:vertical;line-height:1.55}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:var(--s5)}
+.row label:first-child{margin-top:0}
+.actions{display:flex;gap:var(--s3);align-items:center;flex-wrap:wrap}
+.btn.ghost{background:transparent;color:var(--ink)}
+.btn.ghost:hover{background:var(--ink);color:var(--pale);border-color:var(--ink)}
+.on-dark .btn.ghost{color:var(--pale);border-color:var(--pale)}
+.on-dark .btn.ghost:hover{background:var(--pale);color:var(--blue-deep)}
+.btn.sm{padding:.7rem 1.1rem}
+.msg{border-left:6px solid;padding:var(--s3) var(--s4);margin-bottom:var(--s5);font-weight:600}
+.msg.ok{background:#ddf3e6;color:#0a5430;border-color:var(--ok)}
+.msg.err{background:#fbe3e0;color:#8c1c15;border-color:var(--bad)}
+.gate{background:var(--blue);min-height:100vh;min-height:100svh;display:grid;place-items:center;padding:var(--gutter)}
+.gate .panel{width:100%;max-width:26rem}
+.gate h1{font-size:clamp(2.5rem,9vw,3.5rem);line-height:.92;margin-bottom:var(--s5)}
+.gate .mark{color:var(--pale);margin-bottom:var(--s5)}
+.gate .btn{margin-top:var(--s6);width:100%;justify-content:center}
+.gate p{margin-bottom:var(--s3)}
+.lost{background:var(--blue);color:var(--pale);flex:1;display:flex;align-items:center}
+.lost h1{font-size:clamp(5rem,22vw,16rem)}
+.lost p{font-size:1.25rem;margin:var(--s5) 0}
+.lost .btn{background:var(--pale);color:var(--blue-deep);border-color:var(--pale)}
+.lost .btn:hover{background:var(--sun);color:var(--ink);border-color:var(--sun)}
+
+@media(max-width:60rem){
+.hero-foot{grid-template-columns:1fr}.live{justify-content:flex-start}
+.project-in,.about-in,.contact-in{grid-template-columns:1fr}
+.p-pixel .p-art{order:0}
+.p-art{justify-content:flex-start}.ring{width:min(100%,24rem)}.px{width:min(100%,18rem)}
+.admin-grid{grid-template-columns:1fr}.admin-side{position:static}
+}
+@media(max-width:40rem){
+:root{--bar:3.5rem}
+.site-head nav a{padding:.5rem .7rem;font-size:.9375rem}
+.disc-wrap{width:92vw;right:-38vw;top:30%;margin-top:0;opacity:.9}
+.hero{align-items:flex-end}
+.feats{grid-template-columns:1fr}
+.row{grid-template-columns:1fr}
+.links a small{display:none}
+}
+@media(prefers-reduced-motion:reduce){.orb,.ring .spin{animation:none}.p-pixel:hover .px b.off{animation:none}}
 """
 
-HEAD = """<!DOCTYPE html><html lang="en" class="js"><head><meta charset="utf-8">
+HEAD = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>{meta}
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='44' fill='%2315140f'/><circle cx='50' cy='50' r='16' fill='%23f6f5f1'/></svg>">
+<meta name="theme-color" content="#2a2fe0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='50' fill='%232a2fe0'/><circle cx='50' cy='54' r='24' fill='%230c0d2e'/><circle cx='50' cy='17' r='8' fill='%23ffd13d'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600..800&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>{css}</style></head>"""
 
 E = html.escape
 
-PIXEL_CELLS = "".join('<b class="on"></b>' if i in (1, 3, 4, 6, 9, 11, 12, 14) else "<b></b>" for i in range(16))
+LOGO = ('<svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="13" fill="none" stroke="currentColor" stroke-width="2"/>'
+        '<circle cx="14" cy="16" r="6.5" fill="currentColor"/><circle cx="14" cy="5.5" r="2.4" fill="#ffd13d"/></svg>')
+ARROW = ('<svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square">'
+         '<path d="M5 15 15 5M7 5h8v8"/></svg>')
 
-# Served at /app.js (kept as a constant so the site stays a single deployable file).
+# 7x7 pixel "P" glyph for the Pixel panel
+_P = ("1111100", "1000010", "1000010", "1111100", "1000000", "1000000", "1000000")
+PIXEL_CELLS = "".join(
+    f'<b class="{"on" if c == "1" else "off"}" style="--i:{r * 7 + i}"></b>'
+    for r, row in enumerate(_P) for i, c in enumerate(row)
+)
+
+RING_TEXT = "Player stats / Payments / AI chat / Chat logs / Admin dashboard / "
+DONUT_ART = (
+    '<svg class="ring" viewBox="0 0 440 440" aria-hidden="true"><defs><path id="rp" d="M220 220m-192 0a192 192 0 1 1 384 0a192 192 0 1 1-384 0"/></defs>'
+    '<g class="spin"><text><textPath href="#rp" textLength="1200" lengthAdjust="spacing">' + E(RING_TEXT) + '</textPath></text></g>'
+    '<circle cx="220" cy="220" r="118" fill="none" stroke="#2a2fe0" stroke-width="86"/>'
+    '<circle cx="220" cy="220" r="75" fill="#ff9dbb"/></svg>'
+)
+
+# Served at /app.js. Only job: a light parallax on the hero disc (pointer devices, motion allowed).
 SCRIPT = r"""
 (function () {
   "use strict";
-
-  var reduce = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
-  var fine = !!(window.matchMedia && window.matchMedia("(pointer: fine)").matches);
-  if ("scrollRestoration" in history) history.scrollRestoration = "manual";
-
-  var items = Array.prototype.slice.call(document.querySelectorAll("[data-reveal]"));
-  var bar = document.querySelector(".progress");
-  var fill = bar ? bar.querySelector("i") : null;
-  var cursor = document.querySelector(".cursor");
-
-  function reveal(el) { if (el) el.classList.add("is-in"); }
-  function revealAll() { for (var i = 0; i < items.length; i++) reveal(items[i]); }
-
-  function paint() {
-    if (!bar) return;
-    var max = document.documentElement.scrollHeight - window.innerHeight;
-    var p = max > 0 ? Math.min(1, Math.max(0, window.pageYOffset / max)) : 0;
-    fill.style.transform = "scaleX(" + p + ")";
-    bar.classList.toggle("on", window.pageYOffset > 4);
+  var q = function (m) { return window.matchMedia && window.matchMedia(m).matches; };
+  var hero = document.querySelector(".hero");
+  var disc = document.querySelector(".disc-wrap");
+  if (!hero || !disc || q("(prefers-reduced-motion: reduce)") || !q("(pointer: fine)")) return;
+  var tx = 0, ty = 0, x = 0, y = 0, raf = 0;
+  function tick() {
+    x += (tx - x) * 0.08; y += (ty - y) * 0.08;
+    disc.style.transform = "translate3d(" + x.toFixed(2) + "px," + y.toFixed(2) + "px,0)";
+    raf = (Math.abs(tx - x) > 0.1 || Math.abs(ty - y) > 0.1) ? requestAnimationFrame(tick) : 0;
   }
-  window.addEventListener("scroll", paint, { passive: true });
-  window.addEventListener("resize", paint, { passive: true });
-  paint();
-
-  if (reduce) { revealAll(); return; }
-
-  var cancelled = false;
-  var raf = 0;
-
-  function stopMotion() {
-    if (raf) { cancelAnimationFrame(raf); raf = 0; }
-  }
-
-  function clearDragStyles() {
-    for (var i = 0; i < items.length; i++) {
-      var el = items[i];
-      el.style.transition = "";
-      el.style.position = "";
-      el.style.zIndex = "";
-      el.style.opacity = "";
-      el.style.transform = "";
-    }
-  }
-
-  function cancel() {
-    if (cancelled) return;
-    cancelled = true;
-    stopMotion();
-    clearDragStyles();
-    revealAll();
-    if (cursor) {
-      cursor.classList.remove("on");
-      cursor.classList.remove("grab");
-    }
-    if (bar) bar.classList.remove("on");
-  }
-
-  ["wheel", "touchstart", "pointerdown", "keydown"].forEach(function (type) {
-    window.addEventListener(type, cancel, { passive: true });
+  function go() { if (!raf) raf = requestAnimationFrame(tick); }
+  hero.addEventListener("pointermove", function (e) {
+    var b = hero.getBoundingClientRect();
+    tx = ((e.clientX - b.left) / b.width - 0.5) * -44;
+    ty = ((e.clientY - b.top) / b.height - 0.5) * -44;
+    go();
   });
-  document.addEventListener("visibilitychange", function () {
-    if (document.hidden) cancel();
-  });
-
-  function sleep(ms) {
-    return new Promise(function (resolve) { setTimeout(resolve, ms); });
-  }
-
-  function easeInOutCubic(p) {
-    return p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
-  }
-
-  function easeOutCubic(p) {
-    return 1 - Math.pow(1 - p, 3);
-  }
-
-  function scrollToY(y, ms) {
-    return new Promise(function (resolve) {
-      var from = window.pageYOffset;
-      var dist = y - from;
-      if (Math.abs(dist) < 2) { resolve(); return; }
-      var t0 = 0;
-      function step(now) {
-        if (cancelled) { resolve(); return; }
-        if (!t0) t0 = now;
-        var p = Math.min(1, (now - t0) / ms);
-        window.scrollTo(0, from + dist * easeInOutCubic(p));
-        if (p < 1) raf = requestAnimationFrame(step);
-        else resolve();
-      }
-      raf = requestAnimationFrame(step);
-    });
-  }
-
-  function revealOnScroll() {
-    if (!("IntersectionObserver" in window)) { revealAll(); return; }
-    var io = new IntersectionObserver(function (entries) {
-      for (var i = 0; i < entries.length; i++) {
-        if (entries[i].isIntersecting) {
-          reveal(entries[i].target);
-          io.unobserve(entries[i].target);
-        }
-      }
-    }, { threshold: 0.12, rootMargin: "0px 0px -6% 0px" });
-    for (var j = 0; j < items.length; j++) io.observe(items[j]);
-  }
-
-  function revealPassed() {
-    var limit = window.pageYOffset + window.innerHeight * 0.9;
-    for (var i = 0; i < items.length; i++) {
-      if (!items[i].classList.contains("is-in") &&
-          items[i].getBoundingClientRect().top + window.pageYOffset < limit) {
-        reveal(items[i]);
-      }
-    }
-  }
-
-  function autoScroll() {
-    var max = document.documentElement.scrollHeight - window.innerHeight;
-    if (max < 160) return;
-    var duration = Math.min(11000, Math.max(3600, max * 4.2));
-    var t0 = 0;
-    revealPassed();
-    function step(now) {
-      if (cancelled) return;
-      if (!t0) t0 = now;
-      var p = Math.min(1, (now - t0) / duration);
-      var bottom = document.documentElement.scrollHeight - window.innerHeight;
-      window.scrollTo(0, bottom * easeInOutCubic(p));
-      revealPassed();
-      if (p < 1) raf = requestAnimationFrame(step);
-      else if (bar) bar.classList.remove("on");
-    }
-    setTimeout(function () { if (!cancelled) raf = requestAnimationFrame(step); }, 700);
-  }
-
-  /* ---- the cursor that drags the page together ---- */
-  var cx = 0;
-  var cy = 0;
-
-  function placeCursor(x, y) {
-    cx = x;
-    cy = y;
-    cursor.style.transform = "translate3d(" + x + "px," + y + "px,0)";
-  }
-
-  function moveCursor(x, y) {
-    return new Promise(function (resolve) {
-      var fx = cx;
-      var fy = cy;
-      var dist = Math.sqrt((x - fx) * (x - fx) + (y - fy) * (y - fy));
-      var duration = Math.max(210, Math.min(520, dist * 0.8));
-      var t0 = 0;
-      function step(now) {
-        if (cancelled) { resolve(); return; }
-        if (!t0) t0 = now;
-        var p = Math.min(1, (now - t0) / duration);
-        var e = easeInOutCubic(p);
-        var arc = Math.sin(p * Math.PI) * Math.min(26, 7 + dist / 9);
-        placeCursor(fx + (x - fx) * e, fy + (y - fy) * e - arc);
-        if (p < 1) raf = requestAnimationFrame(step);
-        else { placeCursor(x, y); resolve(); }
-      }
-      raf = requestAnimationFrame(step);
-    });
-  }
-
-  function releaseCursor() {
-    cursor.classList.remove("grab");
-    var pulse = cursor.querySelector(".pulse");
-    if (pulse) {
-      pulse.classList.remove("go");
-      void pulse.offsetWidth;
-      pulse.classList.add("go");
-    }
-  }
-
-  function ensureVisible(el) {
-    var r = el.getBoundingClientRect();
-    var h = window.innerHeight;
-    if (r.top >= h * 0.1 && r.bottom <= h * 0.9) return Promise.resolve();
-    var max = document.documentElement.scrollHeight - h;
-    var target = window.pageYOffset + r.top - h * 0.3;
-    return scrollToY(Math.max(0, Math.min(max, target)), 480);
-  }
-
-  function dragIntoPlace(el, i) {
-    return new Promise(function (resolve) {
-      var h = el.getBoundingClientRect().height;
-      var dir = i % 2 ? -1 : 1;
-      var dx = 66 * dir;
-      var dy = 72;
-      var rot = 1.1 * dir;
-      var gx = 17;
-      var gy = Math.min(28, Math.max(10, h / 2));
-
-      el.style.transition = "none";
-      el.style.transform = "none";
-      var r = el.getBoundingClientRect();
-
-      el.style.position = "relative";
-      el.style.zIndex = "5";
-      el.style.opacity = "0.3";
-      el.style.transform = "translate(" + dx + "px," + dy + "px) rotate(" + rot + "deg)";
-
-      var grabX = r.left + dx + gx;
-      var grabY = r.top + dy + gy;
-
-      moveCursor(grabX, grabY).then(function () {
-        if (cancelled) { resolve(); return; }
-        cursor.classList.add("grab");
-
-        var t0 = 0;
-        var duration = 400;
-        function step(now) {
-          if (cancelled) { resolve(); return; }
-          if (!t0) t0 = now;
-          var p = Math.min(1, (now - t0) / duration);
-          var e = easeOutCubic(p);
-          var tx = dx * (1 - e);
-          var ty = dy * (1 - e);
-          var tr = rot * (1 - e);
-          el.style.transform = "translate(" + tx + "px," + ty + "px) rotate(" + tr + "deg)";
-          el.style.opacity = String(0.3 + 0.7 * e);
-          placeCursor(r.left + tx + gx, r.top + ty + gy);
-          if (p < 1) {
-            raf = requestAnimationFrame(step);
-          } else {
-            releaseCursor();
-            reveal(el);
-            el.style.transition = "";
-            el.style.position = "";
-            el.style.zIndex = "";
-            el.style.opacity = "";
-            el.style.transform = "";
-            resolve();
-          }
-        }
-        raf = requestAnimationFrame(step);
-      });
-    });
-  }
-
-  async function play() {
-    placeCursor(window.innerWidth * 0.6, window.innerHeight * 0.6);
-    await sleep(220);
-    if (cancelled) return;
-    cursor.classList.add("on");
-    await sleep(220);
-
-    for (var i = 0; i < items.length; i++) {
-      if (cancelled) return;
-      var el = items[i];
-      await ensureVisible(el);
-      if (cancelled) return;
-      await dragIntoPlace(el, i);
-      if (cancelled) return;
-      await sleep(90);
-    }
-
-    if (cancelled) return;
-    var max = document.documentElement.scrollHeight - window.innerHeight;
-    await scrollToY(max, 650);
-    if (cancelled) return;
-    await moveCursor(window.innerWidth - 70, window.innerHeight - 70);
-    if (cancelled) return;
-    await sleep(220);
-    if (cancelled) return;
-    cursor.classList.remove("on");
-    if (bar) bar.classList.remove("on");
-  }
-
-  if (location.hash) {
-    revealOnScroll();
-    return;
-  }
-
-  window.scrollTo(0, 0);
-
-  if (!cursor || !fine) {
-    revealOnScroll();
-    autoScroll();
-    return;
-  }
-
-  play().catch(function () { cancel(); });
+  hero.addEventListener("pointerleave", function () { tx = 0; ty = 0; go(); });
 })();
 """
 
 
-def project(idx, url, host, badge, name, status, desc, chips):
-    metas = " &middot; ".join(E(c) for c in chips)
+def status_mark(status):
+    return f'<span class="st st-{status}" aria-hidden="true"></span>'
+
+
+def project(cls, url, host, art, name, status, desc, chips):
+    feats = "".join(f"<li>{E(c)}</li>" for c in chips)
     return (
-        f'<a class="project" data-reveal href="{url}" style="--d:{idx * 80}ms">'
-        f'<span class="idx">{idx + 1:02d}</span>'
-        f'<div class="project-body"><div class="project-head">{badge}'
-        f'<span class="name">{name}</span>'
-        f'<span class="status s-{status}">{E(STATUS_LABEL[status])}</span></div>'
-        f'<p class="desc">{desc}</p><p class="meta">{metas}</p></div>'
-        f'<span class="host">{host} <span class="arrow" aria-hidden="true">&#8599;</span></span></a>'
+        f'<a class="project {cls}" href="{url}">'
+        '<div class="project-in"><div class="p-copy">'
+        f'<p class="p-status">{status_mark(status)}{E(STATUS_LABEL[status])}</p>'
+        f'<h3>{name}</h3><p class="desc">{desc}</p><ul class="feats">{feats}</ul>'
+        f'<span class="btn">Open {host}{ARROW}</span></div>'
+        f'<div class="p-art" aria-hidden="true">{art}</div></div></a>'
+    )
+
+
+def page_shell(nav, body, foot):
+    return (
+        '<body><a class="skip" href="#top">Skip to content</a>'
+        f'<header class="site-head on-dark"><div class="wrap"><a class="mark" href="/" aria-label="Void Labs home">{LOGO}Void Labs</a>'
+        f'<nav aria-label="Page sections">{nav}</nav></div></header>'
+        f'<main id="top">{body}</main>{foot}'
+        '<script src="/app.js"></script></body></html>'
     )
 
 
@@ -561,75 +400,60 @@ def home_page(s):
     has_contact = bool(s["email"] or s["discord"])
     links = ""
     if s["email"]:
-        links += f'<a href="mailto:{E(s["email"])}"><span>Email</span>{E(s["email"])}</a>'
+        links += f'<a href="mailto:{E(s["email"])}"><small>Email</small>{E(s["email"])}</a>'
     if s["discord"]:
-        links += f'<a href="{E(s["discord"])}" rel="noopener" target="_blank"><span>Discord</span>{E(s["discord"].replace("https://", ""))}</a>'
+        links += f'<a href="{E(s["discord"])}" rel="noopener" target="_blank"><small>Discord</small>{E(s["discord"].replace("https://", ""))}</a>'
     donut = project(
-        0, "https://donut.voidlabs.fun", "donut.voidlabs.fun",
-        '<span class="badge donut" aria-hidden="true"></span>', "Donut", s["donut_status"],
+        "p-donut", "https://donut.voidlabs.fun", "donut.voidlabs.fun", DONUT_ART, "Donut", s["donut_status"],
         "A Discord bot and web dashboard for the Donut network. Player stats, payments, chat logs and admin tooling, all in one place.",
         ["Player stats", "Payments", "AI chat", "Chat logs", "Admin dashboard"],
     )
     pixel = project(
-        1, "https://pixel.voidlabs.fun", "pixel.voidlabs.fun",
-        f'<span class="badge pixel" aria-hidden="true">{PIXEL_CELLS}</span>', "Pixel", s["pixel_status"],
+        "p-pixel", "https://pixel.voidlabs.fun", "pixel.voidlabs.fun", f'<div class="px">{PIXEL_CELLS}</div>', "Pixel", s["pixel_status"],
         "An all-in-one community bot with tickets, giveaways, applications, moderation and a full web dashboard.",
         ["Tickets", "Giveaways", "Applications", "Moderation", "Staff tools"],
     )
     nav = '<a href="#projects">Projects</a><a href="#about">About</a>' + ('<a href="#contact">Contact</a>' if has_contact else "")
+    live = "".join(
+        f"<li>{status_mark(s[k])}{n} <span>{E(STATUS_LABEL[s[k]])}</span></li>"
+        for n, k in (("Donut", "donut_status"), ("Pixel", "pixel_status"))
+    )
     contact = ""
     if has_contact:
         contact = (
-            '<section id="contact"><div class="wrap sec-grid">'
-            '<div data-reveal><span class="sec-label">03 &mdash; Contact</span></div>'
-            '<div class="contact" data-reveal style="--d:90ms"><h2>Get in touch</h2>'
-            "<p>Questions, bug reports or ideas? Reach me here.</p>"
-            f'<div class="links">{links}</div></div></div></section>'
+            '<section class="contact on-dark" id="contact"><div class="wrap contact-in">'
+            '<div><h2>Get in touch</h2><p>Questions, bug reports or ideas? Reach me here.</p></div>'
+            f'<div class="links">{links}</div></div></section>'
         )
     body = (
-        '<body><div class="cursor" aria-hidden="true">'
-        '<svg viewBox="0 0 24 24"><path d="M5 2.6 19.3 11l-6.5 1.4-2.9 6.7z"/></svg>'
-        '<span class="pulse"></span></div>'
-        '<div class="progress" aria-hidden="true"><i></i></div>'
-        f'<header><div class="wrap"><a class="mark" href="#top"><span class="dot" aria-hidden="true"></span>Void Labs</a>'
-        f'<nav class="top" aria-label="Page sections">{nav}</nav></div></header>'
-        '<main id="top">'
-        '<section class="hero"><div class="wrap">'
-        '<p class="eyebrow" data-reveal>Independent software studio</p>'
-        '<h1 data-reveal style="--d:70ms">Things built in the void.</h1>'
-        '<p class="lede" data-reveal style="--d:150ms">Discord bots and web dashboards for online communities. Designed, built and maintained in-house.</p>'
-        '<div class="hero-meta" data-reveal style="--d:230ms"><span>Two products live</span>'
-        '<span>Discord &amp; web</span><span>Built in-house</span></div>'
-        '</div></section>'
-        '<section id="projects"><div class="wrap">'
-        '<div class="sec-head" data-reveal><h2>Projects</h2>'
-        '<span class="sec-label">01 &mdash; Selected work</span></div>'
-        f'<div class="projects">{donut}{pixel}</div>'
-        '</div></section>'
-        '<section id="about"><div class="wrap sec-grid">'
-        '<div data-reveal><span class="sec-label">02 &mdash; About</span></div>'
-        f'<div class="about" data-reveal style="--d:90ms"><h2>A one-person studio.</h2>'
-        f'<p><strong>Hi, I&rsquo;m {E(s["name"])}.</strong></p>{paras}</div>'
-        '</div></section>'
+        '<section class="hero on-dark"><div class="disc-wrap" aria-hidden="true"><div class="disc"></div>'
+        '<div class="orb o-donut"></div><div class="orb o-pixel"></div></div>'
+        '<div class="wrap hero-in"><h1><span class="ln"><span>Things</span></span><span class="ln"><span>built in</span></span>'
+        '<span class="ln"><span>the void.</span></span></h1>'
+        '<div class="hero-foot"><p class="lede">Discord bots and web dashboards for online communities. Designed, built and maintained in-house.</p>'
+        f'<ul class="live" aria-label="Product status">{live}</ul></div></div></section>'
+        '<section class="projects" id="projects"><div class="wrap sec-title"><h2>Two products, built end to end.</h2></div>'
+        f'{donut}{pixel}</section>'
+        '<section class="about on-dark" id="about"><div class="wrap about-in">'
+        f'<h2>Hi, I&rsquo;m {E(s["name"])}.</h2><div class="copy">{paras}</div></div></section>'
         f'{contact}'
-        '</main>'
-        f'<footer><div class="wrap"><span>&copy; {time.gmtime().tm_year} Void Labs</span>'
-        '<span>Independent software studio</span></div></footer>'
-        '<script src="/app.js"></script>'
-        '<noscript><style>.js [data-reveal]{opacity:1;transform:none}</style></noscript>'
-        '</body></html>'
     )
-    return HEAD.format(title="Void Labs", css=CSS, meta='<meta name="description" content="Void Labs builds Discord bots and web dashboards. Home of Donut and Pixel.">') + body
+    foot = (
+        '<footer class="site-foot on-dark"><div class="wrap"><div class="foot-row">'
+        f'<span>&copy; {time.gmtime().tm_year} Void Labs</span><span>Independent software studio</span></div></div>'
+        '<div class="foot-word" aria-hidden="true">Void Labs</div></footer>'
+    )
+    return HEAD.format(title="Void Labs", css=CSS, meta='<meta name="description" content="Void Labs builds Discord bots and web dashboards. Home of Donut and Pixel.">') + page_shell(nav, body, foot)
 
 
 def admin_login_page(msg=""):
-    m = f'<div class="msg err">{E(msg)}</div>' if msg else ""
+    m = f'<div class="msg err" role="alert">{E(msg)}</div>' if msg else ""
     body = (
-        '<body><main><div class="wrap" style="padding:3rem 0"><div class="card"><h1>Admin login</h1>'
+        f'<body><main class="gate on-dark"><div><a class="mark" href="/">{LOGO}Void Labs</a><div class="panel"><h1>Admin login</h1>'
         f'{m}<form method="post" action="/admin/login" autocomplete="on">'
-        '<label for="u">Username</label><input id="u" name="username" autocomplete="username" required>'
+        '<label for="u" style="margin-top:0">Username</label><input id="u" name="username" autocomplete="username" required>'
         '<label for="p">Password</label><input id="p" name="password" type="password" autocomplete="current-password" required>'
-        '<button type="submit">Log in</button></form></div></div></main></body></html>'
+        '<button class="btn" type="submit">Log in</button></form></div></div></main></body></html>'
     )
     return HEAD.format(title="Admin login", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
 
@@ -637,35 +461,47 @@ def admin_login_page(msg=""):
 def admin_page(s, csrf, msg="", kind="ok"):
     def opts(cur):
         return "".join(f'<option value="{v}"{" selected" if v == cur else ""}>{l}</option>' for v, l in STATUSES)
-    m = f'<div class="msg {kind}">{E(msg)}</div>' if msg else ""
+    m = f'<div class="msg {kind}" role="{"alert" if kind == "err" else "status"}">{E(msg)}</div>' if msg else ""
+    live = "".join(
+        f'<li>{status_mark(s[k])}{n}<span>{E(STATUS_LABEL[s[k]])}</span></li>'
+        for n, k in (("Donut", "donut_status"), ("Pixel", "pixel_status"))
+    )
     body = (
-        '<body><main><div class="wrap" style="padding:2rem 0 3rem">'
-        '<div class="bar"><a class="mark" href="/"><span class="dot" aria-hidden="true"></span>View site</a>'
+        '<body class="adm"><a class="skip" href="#top">Skip to content</a>'
+        f'<header class="site-head on-dark"><div class="wrap"><a class="mark" href="/">{LOGO}View site</a>'
         f'<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{csrf}">'
-        '<button class="ghost" type="submit">Log out</button></form></div>'
-        f'<div class="card"><h1>Site settings</h1>{m}'
-        f'<form method="post" action="/admin/save"><input type="hidden" name="csrf" value="{csrf}">'
-        '<div class="row"><div><label for="ds">Donut status</label>'
+        '<button class="btn ghost sm" type="submit">Log out</button></form></div></header>'
+        '<main id="top"><div class="wrap admin-grid">'
+        f'<aside class="admin-side"><h1>Site settings</h1><p>Changes go live on the public site as soon as you save.</p><ul aria-label="Current status">{live}</ul></aside>'
+        f'<div>{m}<form method="post" action="/admin/save"><input type="hidden" name="csrf" value="{csrf}">'
+        '<fieldset><legend>Product status</legend><div class="row"><div><label for="ds">Donut status</label>'
         f'<select id="ds" name="donut_status">{opts(s["donut_status"])}</select></div>'
         '<div><label for="ps">Pixel status</label>'
-        f'<select id="ps" name="pixel_status">{opts(s["pixel_status"])}</select></div></div>'
-        '<label for="n">Your name <span class="hint">(shown in "Hi, I&rsquo;m ...")</span></label>'
+        f'<select id="ps" name="pixel_status">{opts(s["pixel_status"])}</select></div></div></fieldset>'
+        '<fieldset><legend>Public profile</legend>'
+        '<label for="n" style="margin-top:0">Your name <span class="hint">(shown in &ldquo;Hi, I&rsquo;m &hellip;&rdquo;)</span></label>'
         f'<input id="n" name="name" maxlength="40" value="{E(s["name"])}" required>'
         '<label for="e">Contact email <span class="hint">(leave empty to hide)</span></label>'
         f'<input id="e" name="email" type="email" maxlength="120" value="{E(s["email"])}" placeholder="you@example.com">'
         '<label for="d">Support Discord <span class="hint">(leave empty to hide)</span></label>'
         f'<input id="d" name="discord" maxlength="80" value="{E(s["discord"])}" placeholder="discord.gg/yourcode">'
         '<label for="a">About me <span class="hint">(blank line = new paragraph)</span></label>'
-        f'<textarea id="a" name="about" maxlength="1500">{E(s["about"])}</textarea>'
-        '<button type="submit">Save changes</button></form></div></div></main></body></html>'
+        f'<textarea id="a" name="about" maxlength="1500">{E(s["about"])}</textarea></fieldset>'
+        '<div class="actions"><button class="btn" type="submit">Save changes</button></div></form></div></div></main></body></html>'
     )
     return HEAD.format(title="Admin", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
 
 
 NOT_ENABLED = HEAD.format(title="Admin disabled", css=CSS, meta='<meta name="robots" content="noindex">') + (
-    '<body><main><div class="wrap" style="padding-top:3rem"><div class="card"><h1>Admin is off</h1>'
+    f'<body><main class="gate on-dark"><div><a class="mark" href="/">{LOGO}Void Labs</a><div class="panel"><h1>Admin is off</h1>'
     "<p>Set an <strong>ADMIN_PASSWORD</strong> environment variable (at least 10 characters) and restart the server to turn it on.</p>"
     "</div></div></main></body></html>"
+)
+
+NOT_FOUND = HEAD.format(title="Not found", css=CSS, meta="") + (
+    f'<body><header class="site-head on-dark"><div class="wrap"><a class="mark" href="/">{LOGO}Void Labs</a></div></header>'
+    '<main class="lost on-dark" id="top"><div class="wrap"><h1>404</h1><p>This page is not here.</p>'
+    f'<a class="btn" href="/">Back to Void Labs{ARROW}</a></div></main></body></html>'
 )
 
 
@@ -754,9 +590,7 @@ class Handler(BaseHTTPRequestHandler):
             if not tok:
                 return self.send(200, admin_login_page(), private=True)
             return self.send(200, admin_page(load(), csrf_for(tok)), private=True)
-        self.send(404, HEAD.format(title="Not found", css=CSS, meta="") +
-                  '<body><main><div class="wrap" style="padding-top:4rem"><h1>Not found</h1>'
-                  '<p class="lede"><a href="/">Back to Void Labs</a></p></div></main></body></html>')
+        self.send(404, NOT_FOUND)
 
     do_HEAD = do_GET
 
