@@ -160,31 +160,28 @@ main{flex:1}
 .site-head nav a:hover{color:var(--text)}.site-head nav a:hover::after{transform:scaleX(1)}
 
 /* hero */
-.hero{position:relative;overflow:hidden;border-bottom:1px solid var(--line)}
-.hero-in{position:relative;z-index:2;padding-block:clamp(4rem,11vw,9rem) var(--s8)}
-h1{font:800 clamp(2.6rem,11vw,10rem)/.9 var(--display);letter-spacing:-.045em}
+.hero{border-bottom:1px solid var(--line)}
+.hero-in{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--s7) clamp(2rem,5vw,5rem);align-items:end;padding-block:clamp(3.5rem,8vw,7rem) var(--s8)}
+h1{font:800 clamp(2.6rem,7.4vw,7rem)/.92 var(--display);letter-spacing:-.045em}
 h1 .ln{display:block;overflow:hidden;padding-bottom:.1em;margin-bottom:-.1em}
 h1 .ln>span{display:block}
-.hero-foot{margin-top:clamp(3rem,8vw,6.5rem);display:grid;grid-template-columns:minmax(0,26rem) minmax(0,34rem);justify-content:space-between;gap:var(--s7);align-items:end}
-.lede{font-size:clamp(1.125rem,1.6vw,1.3125rem);line-height:1.55;color:var(--muted);max-width:28em}
+.lede{margin-top:var(--s7);font-size:clamp(1.125rem,1.5vw,1.25rem);line-height:1.55;color:var(--muted);max-width:27em}
 .lede b{color:var(--text);font-weight:600}
-.live{list-style:none;border-bottom:1px solid var(--line)}
-.live a{display:grid;grid-template-columns:1fr auto 1.25rem;align-items:center;gap:var(--s4);padding:var(--s4) 0;border-top:1px solid var(--line);font-weight:600;transition:color .2s,padding .25s}
-.live a:hover{color:var(--violet-text);padding-left:var(--s2)}
-.live .arr{width:1.1rem;height:1.1rem;transition:transform .25s}
-.live a:hover .arr{transform:translate(2px,-2px)}
-.live .nm{font:700 1.375rem/1 var(--display)}
-.orbit{position:absolute;z-index:1;right:calc(var(--s8)*-1);top:var(--s6);width:min(58vh,46vw);aspect-ratio:1;border-radius:50%;border:1px solid rgba(143,107,255,.45)}
-.orbit .in{position:absolute;inset:16%;border-radius:50%;border:1px solid rgba(127,163,255,.3)}
-.orbit i{position:absolute;inset:0;animation:spin 90s linear infinite}
-.orbit i::after{content:"";position:absolute;top:-6px;left:50%;margin-left:-6px;width:12px;height:12px;border-radius:50%;background:var(--violet)}
-.orbit .in i{animation-duration:60s;animation-direction:reverse}
-.orbit .in i::after{background:var(--blue);width:8px;height:8px;top:-4px;margin-left:-4px}
-@keyframes spin{to{transform:rotate(360deg)}}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:var(--s4)}
+.tile{display:flex;flex-direction:column;background:var(--char);border:1px solid var(--line-2);border-radius:var(--r);overflow:hidden;transition:border-color .25s,transform .35s cubic-bezier(.2,.8,.2,1)}
+.tile:hover{border-color:var(--violet);transform:translateY(-4px)}
+.t-art{position:relative;aspect-ratio:3/4;background:var(--void);border-bottom:1px solid var(--line-2);overflow:hidden;display:flex;align-items:center;justify-content:center}
+.t-art img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:top left}
+.t-art svg{width:62%;height:auto}
+.t-art .px{width:48%}
+.t-cap{display:flex;flex-direction:column;gap:var(--s2);padding:var(--s4)}
+.t-cap .st{align-items:flex-start}.t-cap .st::before{margin-top:.4em}
+.t-cap .nm{font:700 1.5rem/1 var(--display);letter-spacing:-.02em;transition:color .2s}
+.tile:hover .nm{color:var(--violet-text)}
 @media(prefers-reduced-motion:no-preference){
 h1 .ln>span{animation:rise 1s cubic-bezier(.2,.8,.2,1) both}
 h1 .ln:nth-child(2)>span{animation-delay:.09s}h1 .ln:nth-child(3)>span{animation-delay:.18s}
-.hero-foot{animation:fade .9s .55s both}.orbit{animation:fade 1.4s .2s both}}
+.lede{animation:fade .9s .45s both}.tiles{animation:fade 1s .35s both}}
 @keyframes rise{from{transform:translateY(105%)}}
 @keyframes fade{from{opacity:0}}
 
@@ -296,24 +293,23 @@ textarea{min-height:12rem;resize:vertical;line-height:1.55}
 .lost p{font-size:1.25rem;margin:var(--s5) 0 var(--s6);color:var(--muted)}
 
 @media(max-width:62rem){
-.hero-foot{grid-template-columns:1fr}
 .project-in,.project.flip .project-in,.about-in{grid-template-columns:1fr}
 .project.flip .p-copy{order:0}
 .p-copy{position:static}
-.orbit{width:90vw;right:-40vw;top:var(--s6);opacity:.7}
+.hero-in{grid-template-columns:1fr;align-items:start}
+h1{font-size:clamp(2.6rem,12.5vw,7rem)}
 .shot::before,.flip .shot::before{transform:translate(8px,8px)}
 .admin-grid{grid-template-columns:1fr}.admin-side{position:static}
 }
 @media(max-width:40rem){
 :root{--bar:4rem}
 .site-head nav{gap:var(--s4)}
-.live a{grid-template-columns:1fr auto 1rem}
+.t-art{aspect-ratio:1/1}.t-cap{padding:var(--s3)}.t-cap .nm{font-size:1.25rem}
 .focus li,.feats li{grid-template-columns:1fr;gap:var(--s1)}
 .row{grid-template-columns:1fr}
 .links small{display:none}
 .foot-row{flex-direction:column;align-items:flex-start}
 }
-@media(prefers-reduced-motion:reduce){.orbit i{animation:none}}
 """
 
 HEAD = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
@@ -337,6 +333,9 @@ PIXEL_ART = '<div class="mark-art"><div class="px">' + "".join(
 DONUT_ART = ('<div class="mark-art"><svg viewBox="0 0 200 200" aria-hidden="true" fill="none">'
              '<circle cx="100" cy="100" r="92" stroke="#3a3a46"/><circle cx="100" cy="100" r="62" stroke="#8f6bff" stroke-width="34"/>'
              '<circle cx="100" cy="100" r="26" stroke="#3a3a46"/></svg></div>')
+
+TILE_DONUT = DONUT_ART.replace('class="mark-art"', 'style="display:contents"')
+TILE_PIXEL = PIXEL_ART.replace('class="mark-art"', 'style="display:contents"')
 
 # Served at /app.js: flags JS early, then reveals project screenshots once as they scroll into view.
 SCRIPT = r"""
@@ -367,6 +366,14 @@ def shot_file(key):
         if os.path.isfile(os.path.join(SHOTS_DIR, key + ext)):
             return key + ext
     return None
+
+
+def tile(key, name, status, fallback):
+    f = shot_file(key)
+    art = f'<img src="/shots/{f}" alt="" loading="eager" decoding="async">' if f else fallback
+    return (f'<a class="tile" href="#{key}" aria-label="{name}, {E(PUBLIC_LABEL[status])}. Jump to project">'
+            f'<div class="t-art" aria-hidden="true">{art}</div>'
+            f'<div class="t-cap"><span class="nm">{name}</span>{status_html(status)}</div></a>')
 
 
 def status_html(status):
@@ -421,11 +428,7 @@ def home_page(s):
          ("Staff tools", "For the people on your team.")],
     )
     nav = '<a href="#projects">Work</a><a href="#about">About</a>' + ('<a href="#contact">Contact</a>' if has_contact else "")
-    live = "".join(
-        f'<li><a href="#{k}"><span class="nm">{n}</span>{status_html(s[k + "_status"])}'
-        '<svg class="arr" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><path d="M10 3v13M4 11l6 6 6-6"/></svg></a></li>'
-        for n, k in (("Donut", "donut"), ("Pixel", "pixel"))
-    )
+    tiles = (tile("donut", "Donut", s["donut_status"], TILE_DONUT) + tile("pixel", "Pixel", s["pixel_status"], TILE_PIXEL))
     contact = ""
     if has_contact:
         contact = (
@@ -434,11 +437,10 @@ def home_page(s):
         )
     foot_nav = '<a href="#projects">Work</a><a href="#about">About</a>' + ('<a href="#contact">Contact</a>' if has_contact else "")
     body = (
-        '<section class="hero"><div class="orbit" aria-hidden="true"><i></i><div class="in"><i></i></div></div>'
-        '<div class="wrap hero-in"><h1><span class="ln"><span>Bots and</span></span><span class="ln"><span>dashboards,</span></span>'
-        '<span class="ln"><span>built right.</span></span></h1>'
-        '<div class="hero-foot"><p class="lede"><b>Void Labs is a one-person studio.</b> I design, build and run Discord bots and the dashboards behind them.</p>'
-        f'<ul class="live" aria-label="Products and their status">{live}</ul></div></div></section>'
+        '<section class="hero"><div class="wrap hero-in"><div><h1><span class="ln"><span>Bots and</span></span>'
+        '<span class="ln"><span>dashboards,</span></span><span class="ln"><span>built right.</span></span></h1>'
+        '<p class="lede"><b>Void Labs is a one-person studio.</b> I design, build and run Discord bots and the dashboards behind them.</p></div>'
+        f'<div class="tiles" aria-label="Products and their status">{tiles}</div></div></section>'
         '<section id="projects"><div class="wrap sec-head"><h2>Donut and Pixel.</h2>'
         '<p>Two Discord bots, each with its own web dashboard. Built, hosted and maintained by me.</p></div>'
         f'{donut}{pixel}</section>'
