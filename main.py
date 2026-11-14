@@ -5,8 +5,12 @@ Environment variables (set them in the bot-hosting.net panel):
   ADMIN_PASSWORD  REQUIRED to enable /admin (min 10 characters)
   ADMIN_USERNAME  optional, default "admin"
   SESSION_SECRET  optional extra secret used to sign login cookies
+  DISCORD_WEBHOOK_URL  optional: Discord webhook that gets a message when a site goes down or recovers
+  MONITOR_INTERVAL     optional: seconds between health checks (default 60, 0 turns the monitor off)
+  MONITOR_URLS         optional override, e.g. "donut=https://a.example,pixel=https://b.example,site=https://c.example"
 """
-import hashlib, hmac, html, json, os, re, secrets, threading, time
+import hashlib, hmac, html, json, os, re, secrets, ssl, threading, time
+import urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -24,6 +28,7 @@ SESSION_TTL = 8 * 3600
 
 STATUSES = [("online", "Online"), ("maintenance", "Maintenance"), ("offline", "Offline")]
 STATUS_LABEL = dict(STATUSES)
+STATUS_OPTIONS = STATUSES + [("auto", "Auto (follow monitor)")]
 PUBLIC_LABEL = {"online": "Online", "maintenance": "Under maintenance", "offline": "Offline"}
 
 DEFAULTS = {
@@ -56,7 +61,7 @@ def load():
     except (OSError, ValueError):
         pass
     for k in ("donut_status", "pixel_status"):
-        if data[k] not in STATUS_LABEL:
+        if data[k] not in STATUS_LABEL and data[k] != "auto":
             data[k] = "online"
     return data
 
@@ -93,8 +98,8 @@ def validate(form):
             return out, "Discord link must look like discord.gg/yourcode or discord.com/invite/yourcode."
         out["discord"] = "https://discord.gg/" + m.group(1)
     for k in ("donut_status", "pixel_status"):
-        if out[k] not in STATUS_LABEL:
-            return out, "Pick Online, Maintenance or Offline for each site."
+        if out[k] not in STATUS_LABEL and out[k] != "auto":
+            return out, "Pick Auto, Online, Maintenance or Offline for each site."
     return out, None
 
 
@@ -122,6 +127,154 @@ def csrf_for(token):
 
 def same(a, b):
     return hmac.compare_digest(a.encode(), b.encode())
+
+
+# ---------- monitor ----------
+# Checks each service with a plain HTTP request every MONITOR_INTERVAL seconds. A site counts as up when it answers
+# with any status below 500. A state only flips after two checks in a row agree, so one blip never raises an alarm.
+SERVICES = [
+    ("donut", "Donut", "https://donut.voidlabs.fun/"),
+    ("pixel", "Pixel", "https://pixel.voidlabs.fun/"),
+    ("site", "Void Labs", "https://voidlabs.fun/"),
+]
+for _pair in (os.getenv("MONITOR_URLS") or "").split(","):
+    _k, _, _u = _pair.strip().partition("=")
+    if _u.startswith(("http://", "https://")):
+        SERVICES = [(k, n, _u if k == _k else u) for k, n, u in SERVICES]
+try:
+    MONITOR_INTERVAL = int(os.getenv("MONITOR_INTERVAL") or 60)
+except ValueError:
+    MONITOR_INTERVAL = 60
+MONITOR_FILE = os.getenv("MONITOR_FILE") or os.path.join(BASE, "monitor.json")
+WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL") or ""
+WEBHOOK_OK = WEBHOOK.startswith(("https://discord.com/api/webhooks/", "https://discordapp.com/api/webhooks/"))
+HIST_MAX = 1440  # 24h at one check per minute
+UA = "VoidLabsMonitor/1.0 (+https://voidlabs.fun)"
+
+_mlock = threading.Lock()
+MON = {k: {"hist": [], "state": None, "since": 0, "streak": 0} for k, _, _ in SERVICES}
+INCIDENTS = []  # newest first: {"t", "key", "ok"}
+
+
+def mon_load():
+    try:
+        with open(MONITOR_FILE, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        for k in MON:
+            h = saved.get("hist", {}).get(k, [])
+            if isinstance(h, list):
+                MON[k]["hist"] = [x for x in h if isinstance(x, dict)][-HIST_MAX:]
+            st = saved.get("state", {}).get(k)
+            if isinstance(st, list) and len(st) == 2:
+                MON[k]["state"], MON[k]["since"] = st[0], int(st[1])
+        inc = saved.get("incidents", [])
+        if isinstance(inc, list):
+            INCIDENTS[:] = [x for x in inc if isinstance(x, dict)][:50]
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+def mon_save():
+    tmp = MONITOR_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"hist": {k: v["hist"] for k, v in MON.items()},
+                       "state": {k: [v["state"], v["since"]] for k, v in MON.items()},
+                       "incidents": INCIDENTS[:50]}, f)
+        os.replace(tmp, MONITOR_FILE)
+    except OSError:
+        pass
+
+
+def probe(url):
+    t0 = time.time()
+    code = 0
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=8, context=ssl.create_default_context()) as r:
+            code = r.status
+    except urllib.error.HTTPError as e:
+        code = e.code
+    except Exception:
+        code = 0
+    return {"t": int(time.time()), "ok": 0 < code < 500, "ms": int((time.time() - t0) * 1000), "code": code}
+
+
+def post_webhook(text):
+    if not WEBHOOK_OK:
+        return
+    try:
+        body = json.dumps({"content": text, "username": "Void Labs Monitor"}).encode()
+        req = urllib.request.Request(WEBHOOK, data=body, headers={"Content-Type": "application/json", "User-Agent": UA})
+        urllib.request.urlopen(req, timeout=8).read()
+    except Exception:
+        pass
+
+
+def fmt_dur(sec):
+    sec = int(sec)
+    if sec < 90:
+        return f"{sec}s"
+    if sec < 5400:
+        return f"{sec // 60} min"
+    return f"{sec // 3600} h {sec % 3600 // 60} min"
+
+
+def record(key, res):
+    name = {k: n for k, n, _ in SERVICES}[key]
+    alert = None
+    with _mlock:
+        m = MON[key]
+        m["hist"].append(res)
+        del m["hist"][:-HIST_MAX]
+        if m["state"] is None:
+            m["state"], m["since"], m["streak"] = res["ok"], res["t"], 0
+        elif res["ok"] != m["state"]:
+            m["streak"] += 1
+            if m["streak"] >= 2:
+                was = res["t"] - m["since"]
+                m["state"], m["since"], m["streak"] = res["ok"], res["t"], 0
+                INCIDENTS.insert(0, {"t": res["t"], "key": key, "ok": res["ok"]})
+                del INCIDENTS[50:]
+                alert = (f"{name} is back up after {fmt_dur(was)}." if res["ok"]
+                         else f"{name} is DOWN ({'HTTP ' + str(res['code']) if res['code'] else 'no response'}).")
+        else:
+            m["streak"] = 0
+    if alert:
+        threading.Thread(target=post_webhook, args=(alert,), daemon=True).start()
+
+
+def check_all():
+    out = []
+    def one(key, url):
+        record(key, probe(url))
+    ths = [threading.Thread(target=one, args=(k, u), daemon=True) for k, _, u in SERVICES]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join(12)
+    mon_save()
+
+
+def monitor_loop():
+    mon_load()
+    while True:
+        check_all()
+        time.sleep(max(15, MONITOR_INTERVAL))
+
+
+def live_state(key):
+    m = MON.get(key)
+    return m["state"] if m else None
+
+
+def effective(s):
+    """Resolve 'auto' statuses against the monitor. Unknown (no data yet) counts as online."""
+    s = dict(s)
+    for k in ("donut", "pixel"):
+        if s[k + "_status"] == "auto":
+            s[k + "_status"] = "offline" if live_state(k) is False else "online"
+    return s
 
 
 # ---------- pages ----------
@@ -292,7 +445,42 @@ textarea{min-height:12rem;resize:vertical;line-height:1.55}
 .lost h1{font-size:clamp(6rem,24vw,18rem);color:var(--violet)}
 .lost p{font-size:1.25rem;margin:var(--s5) 0 var(--s6);color:var(--muted)}
 
+/* monitor */
+.admin-nav{display:flex;gap:var(--s5)}
+.admin-nav a{padding:var(--s2) 0;font-weight:600;color:var(--muted);border-bottom:1px solid transparent}
+.admin-nav a:hover{color:var(--text)}.admin-nav a[aria-current]{color:var(--text);border-color:var(--violet)}
+.ops-top{display:flex;justify-content:space-between;align-items:end;gap:var(--s5);flex-wrap:wrap;padding-block:var(--s7) var(--s6)}
+.ops-top h1{font-size:clamp(2.5rem,5vw,4rem);line-height:.95;letter-spacing:-.04em}
+.ops-top p{color:var(--muted);max-width:34em;margin-top:var(--s3)}
+.ops-top .btn{margin:0}
+.svc{border-top:1px solid var(--line-2);padding:var(--s5) 0;display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,.8fr) minmax(0,1.4fr);gap:var(--s4) var(--s6);align-items:center}
+.svc:last-of-type{border-bottom:1px solid var(--line-2)}
+.svc h2{font:700 1.5rem/1.1 var(--display);letter-spacing:-.02em;max-width:none}
+.svc h2 a:hover{color:var(--violet-text)}
+.svc .url{color:var(--muted);font-size:.9375rem;overflow-wrap:anywhere}
+.stats{display:grid;grid-template-columns:repeat(3,auto);gap:var(--s4);justify-content:start}
+.stats dt{color:var(--muted);font-size:.875rem}.stats dd{font:700 1.125rem/1.3 var(--display)}
+.strip{display:flex;align-items:flex-end;gap:2px;height:2rem}
+.strip i{flex:1;min-width:2px;height:100%;background:var(--ok);border-radius:1px}
+.strip i.bad{height:35%;background:var(--bad)}.strip i.none{height:12%;background:var(--line-2)}
+.strip-cap{color:var(--muted);font-size:.8125rem;margin-top:var(--s1)}
+.ctl{grid-column:1/-1;display:flex;align-items:center;gap:var(--s3);flex-wrap:wrap}
+.ctl>span{color:var(--muted);font-size:.9375rem;margin-right:var(--s2)}
+.seg{display:inline-flex;border:1px solid var(--line-2);border-radius:var(--r);overflow:hidden}
+.seg button{background:transparent;color:var(--text);border:0;border-right:1px solid var(--line-2);padding:.55rem .9rem;font:600 .9375rem var(--body);cursor:pointer;transition:background .2s}
+.seg button:last-child{border-right:0}
+.seg button:hover{background:var(--raised)}
+.seg button[aria-pressed=true]{background:var(--violet);color:var(--void)}
+.inc{list-style:none;margin-top:var(--s4)}
+.inc li{display:grid;grid-template-columns:11rem 1fr;gap:var(--s4);border-top:1px solid var(--line);padding:var(--s3) 0}
+.inc li:last-child{border-bottom:1px solid var(--line)}
+.inc time{color:var(--muted)}
+.ops-sec{padding-bottom:var(--s8)}
+.ops-sec h2{font:700 1.5rem/1.1 var(--display);letter-spacing:-.02em;margin:var(--s7) 0 var(--s2);max-width:none}
+.note{color:var(--muted)}
 @media(max-width:62rem){
+.svc{grid-template-columns:1fr}.inc li{grid-template-columns:1fr;gap:var(--s1)}
+
 .project-in,.project.flip .project-in,.about-in{grid-template-columns:1fr}
 .project.flip .p-copy{order:0}
 .p-copy{position:static}
@@ -406,6 +594,7 @@ def page_shell(nav, body, foot):
 
 
 def home_page(s):
+    s = effective(s)
     paras = "".join(f"<p>{E(p.strip())}</p>" for p in s["about"].split("\n\n") if p.strip())
     has_contact = bool(s["email"] or s["discord"])
     links = ""
@@ -472,18 +661,27 @@ def admin_login_page(msg=""):
     return HEAD.format(title="Admin", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
 
 
+def admin_head(csrf, active):
+    cur = lambda n: ' aria-current="page"' if active == n else ""
+    return (
+        f'<header class="site-head"><div class="wrap"><a class="mark" href="/">{LOGO}View site</a>'
+        f'<nav class="admin-nav" aria-label="Admin"><a href="/admin"{cur("settings")}>Settings</a><a href="/admin/ops"{cur("monitor")}>Monitor</a></nav>'
+        f'<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{csrf}">'
+        '<button class="btn ghost sm" type="submit">Log out</button></form></div></header>'
+    )
+
+
 def admin_page(s, csrf, msg="", kind="ok"):
     def opts(cur):
-        return "".join(f'<option value="{v}"{" selected" if v == cur else ""}>{l}</option>' for v, l in STATUSES)
+        return "".join(f'<option value="{v}"{" selected" if v == cur else ""}>{l}</option>' for v, l in STATUS_OPTIONS)
     m = f'<div class="msg {kind}" role="{"alert" if kind == "err" else "status"}">{E(msg)}</div>' if msg else ""
+    eff = effective(s)
     live = "".join(
-        f'<li>{n}{status_html(s[k])}</li>' for n, k in (("Donut", "donut_status"), ("Pixel", "pixel_status"))
+        f'<li>{n}{status_html(eff[k])}</li>' for n, k in (("Donut", "donut_status"), ("Pixel", "pixel_status"))
     )
     body = (
         '<body><a class="skip" href="#top">Skip to content</a>'
-        f'<header class="site-head"><div class="wrap"><a class="mark" href="/">{LOGO}View site</a>'
-        f'<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{csrf}">'
-        '<button class="btn ghost sm" type="submit">Log out</button></form></div></header>'
+        + admin_head(csrf, "settings") +
         '<main id="top"><div class="wrap admin-grid">'
         f'<aside class="admin-side"><h1>Site settings</h1><p>Edits appear on the public site as soon as you save.</p><ul aria-label="Current status">{live}</ul></aside>'
         f'<div>{m}<form method="post" action="/admin/save"><input type="hidden" name="csrf" value="{csrf}">'
@@ -503,6 +701,66 @@ def admin_page(s, csrf, msg="", kind="ok"):
         '<button class="btn" type="submit">Save changes</button></form></div></div></main></body></html>'
     )
     return HEAD.format(title="Admin", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
+
+
+
+def ago(t):
+    d = int(time.time() - t)
+    return "just now" if d < 5 else fmt_dur(d) + " ago"
+
+
+def ops_page(s, csrf, msg=""):
+    rows = ""
+    with _mlock:
+        snap = {k: (list(v["hist"]), v["state"]) for k, v in MON.items()}
+        inc = list(INCIDENTS[:10])
+    names = {k: n for k, n, _ in SERVICES}
+    for key, name, url in SERVICES:
+        hist, state = snap[key]
+        last = hist[-1] if hist else None
+        day = [h for h in hist if h["t"] >= time.time() - 86400]
+        up = f'{100 * sum(1 for h in day if h["ok"]) / len(day):.1f}%' if day else "No data"
+        if state is None:
+            badge = '<span class="st st-maintenance" style="color:var(--muted)">Checking</span>'
+        else:
+            badge = status_html("online" if state else "offline").replace("Online", "Up").replace("Offline", "Down")
+        latency = f'{last["ms"]} ms' if last and last["ok"] else ("Failed" if last else "No data")
+        code = (f'HTTP {last["code"]}' if last and last["code"] else "No response") if last else "No data"
+        bars = "".join(
+            f'<i class="{"" if h["ok"] else "bad"}" title="{E(time.strftime("%H:%M UTC", time.gmtime(h["t"])))}: {"up, " + str(h["ms"]) + " ms" if h["ok"] else "down"}"></i>'
+            for h in hist[-60:]) or '<i class="none"></i>'
+        ctl = ""
+        if key in ("donut", "pixel"):
+            cur = s[key + "_status"]
+            btns = "".join(
+                f'<button type="submit" name="status" value="{v}" aria-pressed="{"true" if cur == v else "false"}">{l.split(" (")[0]}</button>'
+                for v, l in STATUS_OPTIONS)
+            ctl = (f'<form class="ctl" method="post" action="/admin/ops/status"><input type="hidden" name="csrf" value="{csrf}">'
+                   f'<input type="hidden" name="key" value="{key}"><span>Public status on the site</span><span class="seg" role="group" aria-label="{name} public status">{btns}</span></form>')
+        rows += (
+            f'<div class="svc"><div><h2><a href="{url}" rel="noopener" target="_blank">{name}</a></h2><p class="url">{E(url.replace("https://", ""))}</p></div>'
+            f'<div>{badge}<p class="note">{ago(last["t"]) if last else "Waiting for first check"}</p></div>'
+            f'<div><dl class="stats"><div><dt>Response</dt><dd>{latency}</dd></div><div><dt>Last result</dt><dd>{code}</dd></div><div><dt>Uptime 24h</dt><dd>{up}</dd></div></dl></div>'
+            f'<div style="grid-column:1/-1"><div class="strip" role="img" aria-label="Last {len(hist[-60:])} checks">{bars}</div><p class="strip-cap">Last 60 checks, newest on the right</p></div>{ctl}</div>'
+        )
+    if inc:
+        items = "".join(
+            f'<li><time>{E(time.strftime("%d %b, %H:%M UTC", time.gmtime(i["t"])))}</time><span>{E(names.get(i["key"], i["key"]))} {"recovered" if i["ok"] else "went down"}</span></li>'
+            for i in inc)
+        incs = f'<ul class="inc">{items}</ul>'
+    else:
+        incs = '<p class="note">None recorded yet.</p>'
+    m = f'<div class="msg ok" role="status">{E(msg)}</div>' if msg else ""
+    hook = ("Discord alerts are on." if WEBHOOK_OK else "Discord alerts are off. Set DISCORD_WEBHOOK_URL to turn them on.")
+    on = "" if MONITOR_INTERVAL else " The monitor is turned off (MONITOR_INTERVAL=0), so use Check now."
+    body = (
+        '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "monitor") +
+        f'<main id="top"><div class="wrap"><div class="ops-top"><div><h1>Monitor</h1><p>Checked from the server every {fmt_dur(max(15, MONITOR_INTERVAL) if MONITOR_INTERVAL else 60)}. '
+        f'A site counts as down after two failed checks in a row. {hook}{on}</p></div>'
+        f'<form method="post" action="/admin/ops/check"><input type="hidden" name="csrf" value="{csrf}"><button class="btn" type="submit">Check now</button></form></div>'
+        f'{m}<div>{rows}</div><div class="ops-sec"><h2>Incidents</h2>{incs}</div></div></main></body></html>'
+    )
+    return HEAD.format(title="Monitor", css=CSS, meta='<meta name="robots" content="noindex,nofollow"><meta http-equiv="refresh" content="60">') + body
 
 
 NOT_ENABLED = HEAD.format(title="Admin disabled", css=CSS, meta='<meta name="robots" content="noindex">') + (
@@ -609,6 +867,13 @@ class Handler(BaseHTTPRequestHandler):
             if not tok:
                 return self.send(200, admin_login_page(), private=True)
             return self.send(200, admin_page(load(), csrf_for(tok)), private=True)
+        if path == "/admin/ops":
+            if not ADMIN_ON:
+                return self.send(503, NOT_ENABLED, private=True)
+            tok = self.session()
+            if not tok:
+                return self.send(200, admin_login_page(), private=True)
+            return self.send(200, ops_page(load(), csrf_for(tok)), private=True)
         self.send(404, NOT_FOUND)
 
     do_HEAD = do_GET
@@ -655,6 +920,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, admin_page(clean, csrf_for(tok), err, "err"), private=True)
             save(clean)
             return self.send(200, admin_page(clean, csrf_for(tok), "Saved. Your changes are live.", "ok"), private=True)
+        if path == "/admin/ops/check":
+            check_all()
+            return self.send(200, ops_page(load(), csrf_for(tok), "Checked just now."), private=True)
+        if path == "/admin/ops/status":
+            key, val = form.get("key", [""])[0], form.get("status", [""])[0]
+            if key not in ("donut", "pixel") or (val not in STATUS_LABEL and val != "auto"):
+                return self.send(400, "Bad request", "text/plain")
+            data = load()
+            data[key + "_status"] = val
+            save(data)
+            return self.send(200, ops_page(data, csrf_for(tok), f"{key.title()} is now set to {dict(STATUS_OPTIONS)[val].split(' (')[0]}."), private=True)
         self.send(404, "Not found", "text/plain")
 
 
@@ -663,5 +939,9 @@ if __name__ == "__main__":
         print("WARNING: ADMIN_PASSWORD missing or shorter than 10 characters. /admin is disabled.", flush=True)
     if len(_SS) < 16:
         print("NOTE: SESSION_SECRET missing or under 16 chars. Using a random key; logins reset on restart.", flush=True)
+    if MONITOR_INTERVAL > 0:
+        threading.Thread(target=monitor_loop, daemon=True).start()
+    else:
+        mon_load()
     print(f"Void Labs site running on 0.0.0.0:{PORT}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
