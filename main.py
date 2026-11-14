@@ -8,10 +8,13 @@ Environment variables (set them in the bot-hosting.net panel):
   DISCORD_WEBHOOK_URL  optional: Discord webhook that gets a message when a site goes down or recovers
   MONITOR_INTERVAL     optional: seconds between health checks (default 60, 0 turns the monitor off)
   MESSAGES_FILE        optional path for the contact inbox (default messages.json next to main.py)
+  UPDATES_FILE         optional path for the updates log (default updates.json next to main.py)
   MONITOR_URLS         optional override, e.g. "donut=https://a.example,pixel=https://b.example,site=https://c.example"
 """
 import hashlib, hmac, html, json, os, re, secrets, ssl, threading, time
 import urllib.error, urllib.request
+from email.parser import BytesParser
+from email.policy import default as _email_policy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -136,6 +139,66 @@ def csrf_for(token):
 
 def same(a, b):
     return hmac.compare_digest(a.encode(), b.encode())
+
+
+# ---------- updates log ----------
+UPDATES_FILE = os.getenv("UPDATES_FILE") or os.path.join(BASE, "updates.json")
+_updlock = threading.Lock()
+UPDATES = []  # newest first: {"id","t","title","text","tag"}
+UPD_TAGS = {"": "", "donut": "Donut", "pixel": "Pixel", "site": "Void Labs"}
+
+
+def upd_load():
+    try:
+        with open(UPDATES_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if isinstance(d, list):
+            UPDATES[:] = [x for x in d if isinstance(x, dict) and "id" in x][:200]
+    except (OSError, ValueError):
+        pass
+
+
+def upd_save():
+    tmp = UPDATES_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(UPDATES[:200], f)
+        os.replace(tmp, UPDATES_FILE)
+    except OSError:
+        pass
+
+
+# ---------- screenshot media ----------
+MAX_UPLOAD = 5 * 1024 * 1024
+
+
+def sniff_image(b):
+    if b[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if b[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
+def parse_multipart(ctype, body):
+    """Returns (fields, files) from a multipart/form-data body. files: name -> bytes."""
+    msg = BytesParser(policy=_email_policy).parsebytes(
+        b"Content-Type: " + ctype.encode("latin-1", "replace") + b"\r\nMIME-Version: 1.0\r\n\r\n" + body)
+    fields, files = {}, {}
+    if not msg.is_multipart():
+        return fields, files
+    for part in msg.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        if not name:
+            continue
+        payload = part.get_payload(decode=True) or b""
+        if part.get_filename() is not None:
+            files[name] = payload
+        else:
+            fields[name] = payload.decode("utf-8", "replace")
+    return fields, files
 
 
 # ---------- contact inbox ----------
@@ -486,6 +549,21 @@ textarea{min-height:12rem;resize:vertical;line-height:1.55}
 .lost h1{font-size:clamp(6rem,24vw,18rem);color:var(--violet)}
 .lost p{font-size:1.25rem;margin:var(--s5) 0 var(--s6);color:var(--muted)}
 
+/* updates, status page, media */
+.upd{list-style:none;border-top:1px solid var(--line-2)}
+.upd li{display:grid;grid-template-columns:10rem minmax(0,1fr);gap:var(--s4) var(--s6);padding:var(--s5) 0;border-bottom:1px solid var(--line-2)}
+.upd time{color:var(--muted)}
+.upd h3{font:700 1.375rem/1.25 var(--display);letter-spacing:-.02em;margin:0 0 var(--s2)}
+.upd .tag{display:inline-block;margin-right:var(--s2);color:var(--violet-text);font-weight:700}
+.upd p{color:var(--muted);max-width:40em;white-space:pre-wrap}
+.sum{display:flex;align-items:center;gap:var(--s3);font:700 clamp(1.25rem,2.4vw,1.75rem)/1.2 var(--display);letter-spacing:-.02em;padding:var(--s5) 0;border-block:1px solid var(--line-2)}
+.mgrid{display:grid;grid-template-columns:1fr 1fr;gap:var(--s7);margin-top:var(--s5)}
+.mgrid h2{font:700 1.5rem/1.1 var(--display);letter-spacing:-.02em;margin:0 0 var(--s4);max-width:none}
+.mgrid img{display:block;width:100%;aspect-ratio:16/10;object-fit:cover;object-position:top left;border:1px solid var(--line-2);border-radius:var(--r);margin-bottom:var(--s4)}
+.mgrid .none{display:grid;place-items:center;aspect-ratio:16/10;border:1px dashed var(--line-2);border-radius:var(--r);color:var(--muted);margin-bottom:var(--s4)}
+.mgrid input[type=file]{padding:.6rem}
+.mgrid form+form{margin-top:var(--s3)}
+.site-head.adm .wrap{gap:var(--s5)}
 /* banner + notes + contact form + inbox */
 .banner{background:var(--violet);color:var(--void);font-weight:600;text-align:center;padding:var(--s3) var(--gutter)}
 .p-note{margin-top:var(--s2);color:var(--text);font-weight:500;max-width:28em}
@@ -522,8 +600,8 @@ textarea{min-height:12rem;resize:vertical;line-height:1.55}
 .svc .url{color:var(--muted);font-size:.9375rem;overflow-wrap:anywhere}
 .stats{display:grid;grid-template-columns:repeat(3,auto);gap:var(--s4);justify-content:start}
 .stats dt{color:var(--muted);font-size:.875rem}.stats dd{font:700 1.125rem/1.3 var(--display)}
-.strip{display:flex;align-items:flex-end;gap:2px;height:2rem}
-.strip i{flex:1;min-width:2px;height:100%;background:var(--ok);border-radius:1px}
+.strip{display:flex;align-items:flex-end;justify-content:flex-end;gap:2px;height:2rem}
+.strip i{flex:1 1 0;max-width:14px;min-width:2px;height:100%;background:var(--ok);border-radius:1px}
 .strip i.bad{height:35%;background:var(--bad)}.strip i.none{height:12%;background:var(--line-2)}
 .strip-cap{color:var(--muted);font-size:.8125rem;margin-top:var(--s1)}
 .ctl{grid-column:1/-1;display:flex;align-items:center;gap:var(--s3);flex-wrap:wrap}
@@ -541,6 +619,7 @@ textarea{min-height:12rem;resize:vertical;line-height:1.55}
 .ops-sec h2{font:700 1.5rem/1.1 var(--display);letter-spacing:-.02em;margin:var(--s7) 0 var(--s2);max-width:none}
 .note{color:var(--muted)}
 @media(max-width:62rem){
+.site-head.adm{height:auto}.site-head.adm .wrap{flex-wrap:wrap;padding-block:var(--s3)}.admin-nav{order:3;width:100%;overflow-x:auto;gap:var(--s5)}.upd li{grid-template-columns:1fr;gap:var(--s1)}.mgrid{grid-template-columns:1fr}
 .mrow{grid-template-columns:1fr}.cform{grid-template-columns:1fr}
 .svc{grid-template-columns:1fr}.inc li{grid-template-columns:1fr;gap:var(--s1)}
 
@@ -620,11 +699,22 @@ def shot_file(key):
 
 
 def tile(key, name, status, fallback):
-    f = shot_file(key)
-    art = f'<img src="/shots/{f}" alt="" loading="eager" decoding="async">' if f else fallback
+    u = shot_url(key)
+    art = f'<img src="{u}" alt="" loading="eager" decoding="async">' if u else fallback
     return (f'<a class="tile" href="#{key}" aria-label="{name}, {E(PUBLIC_LABEL[status])}. Jump to project">'
             f'<div class="t-art" aria-hidden="true">{art}</div>'
             f'<div class="t-cap"><span class="nm">{name}</span>{status_html(status)}</div></a>')
+
+
+def shot_url(key):
+    f = shot_file(key)
+    if not f:
+        return None
+    try:
+        v = int(os.path.getmtime(os.path.join(SHOTS_DIR, f)))
+    except OSError:
+        v = 0
+    return f"/shots/{f}?v={v}"
 
 
 def status_html(status):
@@ -633,10 +723,10 @@ def status_html(status):
 
 def project(key, flip, url, host, fallback, name, status, desc, chips, note=""):
     feats = "".join(f"<li>{E(n)}<span>{E(d)}</span></li>" for n, d in chips)
-    f = shot_file(key)
-    if f:
+    u = shot_url(key)
+    if u:
         art = (f'<a class="shot" href="{url}" aria-label="Open the {name} dashboard">'
-               f'<img src="/shots/{f}" alt="{name} dashboard" loading="lazy" decoding="async"></a>')
+               f'<img src="{u}" alt="{name} dashboard" loading="lazy" decoding="async"></a>')
     else:
         art = f'<div class="shot" aria-hidden="true">{fallback}</div>'
     return (
@@ -680,7 +770,8 @@ def home_page(s, notice=""):
          ("Applications", "Collect and review them."), ("Moderation", "Tools to keep order."),
          ("Staff tools", "For the people on your team.")], s["pixel_note"],
     )
-    nav = '<a href="#projects">Work</a><a href="#about">About</a>' + '<a href="#contact">Contact</a>'
+    has_upd = bool(UPDATES)
+    nav = '<a href="#projects">Work</a>' + ('<a href="#updates">Updates</a>' if has_upd else "") + '<a href="#about">About</a><a href="#contact">Contact</a>'
     tiles = (tile("donut", "Donut", s["donut_status"], TILE_DONUT) + tile("pixel", "Pixel", s["pixel_status"], TILE_PIXEL))
     flash = {"sent": '<p class="flash msg ok" role="status">Sent. Thanks, I&rsquo;ll get back to you.</p>',
              "err1": '<p class="flash msg err" role="alert">Add a way to reach you and a message (up to 1000 characters).</p>',
@@ -701,7 +792,7 @@ def home_page(s, notice=""):
         '<section class="contact" id="contact"><div class="wrap contact-in"><h2>Say hello.</h2><p class="sub">Questions, bug reports or an idea for a bot. Email, Discord or the form below.</p>'
         f'<div class="links">{links}</div>{form}</div></section>'
     )
-    foot_nav = '<a href="#projects">Work</a><a href="#about">About</a>' + '<a href="#contact">Contact</a>'
+    foot_nav = '<a href="#projects">Work</a><a href="#about">About</a><a href="#contact">Contact</a><a href="/status">Status</a>'
     body = (
         '<section class="hero"><div class="wrap hero-in"><div><h1><span class="ln"><span>Bots and</span></span>'
         '<span class="ln"><span>dashboards,</span></span><span class="ln"><span>built right.</span></span></h1>'
@@ -710,6 +801,7 @@ def home_page(s, notice=""):
         '<section id="projects"><div class="wrap sec-head"><h2>Donut and Pixel.</h2>'
         '<p>Two Discord bots, each with its own web dashboard. Built, hosted and maintained by me.</p></div>'
         f'{donut}{pixel}</section>'
+        f'{updates_html()}'
         '<section class="about" id="about"><div class="wrap about-in"><h2>About</h2><div>'
         '<p class="statement">One developer, one studio, and software I&rsquo;m happy to keep running.</p>'
         '<ul class="focus"><li><strong>Software</strong><span>Written, hosted and maintained by me.</span></li>'
@@ -743,8 +835,8 @@ def admin_head(csrf, active):
     badge = f'<span class="badge" aria-label="{unread} unread">{unread}</span>' if unread else ""
     cur = lambda n: ' aria-current="page"' if active == n else ""
     return (
-        f'<header class="site-head"><div class="wrap"><a class="mark" href="/">{LOGO}View site</a>'
-        f'<nav class="admin-nav" aria-label="Admin"><a href="/admin"{cur("settings")}>Settings</a><a href="/admin/ops"{cur("monitor")}>Monitor</a><a href="/admin/inbox"{cur("inbox")}>Inbox{badge}</a></nav>'
+        f'<header class="site-head adm"><div class="wrap"><a class="mark" href="/">{LOGO}View site</a>'
+        f'<nav class="admin-nav" aria-label="Admin"><a href="/admin"{cur("settings")}>Settings</a><a href="/admin/ops"{cur("monitor")}>Monitor</a><a href="/admin/inbox"{cur("inbox")}>Inbox{badge}</a><a href="/admin/updates"{cur("updates")}>Updates</a><a href="/admin/media"{cur("media")}>Media</a></nav>'
         f'<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{csrf}">'
         '<button class="btn ghost sm" type="submit">Log out</button></form></div></header>'
     )
@@ -816,6 +908,122 @@ def inbox_page(csrf, msg=""):
         f'{m_}<div class="ops-sec">{rows or empty}</div></div></main></body></html>'
     )
     return HEAD.format(title="Inbox", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
+
+
+def updates_html(limit=5):
+    with _updlock:
+        items = list(UPDATES[:limit])
+    if not items:
+        return ""
+    rows = ""
+    for u in items:
+        t = int(u["t"])
+        tag = UPD_TAGS.get(u.get("tag", ""), "")
+        tag_html = '<span class="tag">' + E(tag) + "</span>" if tag else ""
+        text_html = "<p>" + E(u.get("text", "")) + "</p>" if u.get("text") else ""
+        rows += ('<li><time datetime="' + time.strftime("%Y-%m-%d", time.gmtime(t)) + '">' + E(time.strftime("%d %b %Y", time.gmtime(t))) + "</time>"
+                 "<div><h3>" + tag_html + E(u["title"]) + "</h3>" + text_html + "</div></li>")
+    return (f'<section id="updates"><div class="wrap sec-head"><h2>Updates.</h2><p>What changed lately, newest first.</p></div>'
+            f'<div class="wrap" style="padding-bottom:var(--s9)"><ul class="upd">{rows}</ul></div></section>')
+
+
+def status_page(s):
+    eff = effective(s)
+    with _mlock:
+        snap = {k: (list(v["hist"]), v["state"]) for k, v in MON.items()}
+        inc = [i for i in INCIDENTS if i["key"] in ("donut", "pixel")][:10]
+    rows, bad, unknown = "", 0, 0
+    for key, name in (("donut", "Donut"), ("pixel", "Pixel")):
+        hist, state = snap[key]
+        manual = eff[key + "_status"]
+        if manual == "maintenance":
+            shown = "maintenance"
+        elif manual == "offline" or state is False:
+            shown = "offline"
+        else:
+            shown = "online"
+        if shown != "online":
+            bad += 1
+        if state is None and manual == "online":
+            unknown += 1
+        day = [h for h in hist if h["t"] >= time.time() - 86400]
+        up = f'{100 * sum(1 for h in day if h["ok"]) / len(day):.1f}%' if day else "No data yet"
+        bars = "".join(
+            f'<i class="{"" if h["ok"] else "bad"}" title="{E(time.strftime("%H:%M UTC", time.gmtime(h["t"])))}: {"up" if h["ok"] else "down"}"></i>'
+            for h in hist[-60:]) or '<i class="none"></i>'
+        note = f'<p class="note">{E(s[key + "_note"])}</p>' if s[key + "_note"] else ""
+        rows += (
+            f'<div class="svc"><div><h2>{name}</h2>{note}</div><div>{status_html(shown)}</div>'
+            f'<div><dl class="stats"><div><dt>Uptime, last 24 h</dt><dd>{up}</dd></div></dl></div>'
+            f'<div style="grid-column:1/-1"><div class="strip" role="img" aria-label="{name} recent checks">{bars}</div>'
+            f'<p class="strip-cap">Last 60 checks, newest on the right</p></div></div>')
+    names = {"donut": "Donut", "pixel": "Pixel"}
+    incs = ('<ul class="inc">' + "".join(
+        f'<li><time>{E(time.strftime("%d %b, %H:%M UTC", time.gmtime(i["t"])))}</time><span>{names[i["key"]]} {"recovered" if i["ok"] else "went down"}</span></li>'
+        for i in inc) + '</ul>') if inc else '<p class="note">No incidents recorded.</p>'
+    if bad == 0:
+        head = f'{status_html("online")}' if not unknown else '<span class="st st-maintenance" style="color:var(--muted)">Checking</span>'
+        line = "Everything is running." if not unknown else "Waiting for the first checks."
+    else:
+        head = status_html("maintenance" if all(eff[k + "_status"] == "maintenance" for k in ("donut", "pixel")) else "offline")
+        line = "Something needs attention. Details below."
+    body = (
+        '<section><div class="wrap" style="padding-block:var(--s8) var(--s9)"><h1 style="font-size:clamp(2.6rem,7vw,6rem);letter-spacing:-.045em;line-height:.95;margin-bottom:var(--s6)">Status</h1>'
+        f'<div class="sum">{line}</div><div>{rows}</div><div class="ops-sec"><h2>Incidents</h2>{incs}</div></div></section>')
+    foot = ('<footer class="site-foot"><div class="wrap foot-row"><span>&copy; ' + str(time.gmtime().tm_year) +
+            ' Void Labs. Built in the void.</span><nav aria-label="Footer"><a href="/">Home</a></nav></div></footer>')
+    nav = '<a href="/">Home</a>'
+    return HEAD.format(title="Status | Void Labs", css=CSS, meta='<meta name="description" content="Live status of Donut and Pixel.">') + page_shell(nav, body, foot, s["banner"])
+
+
+def updates_admin_page(csrf, msg=""):
+    with _updlock:
+        items = list(UPDATES)
+    opts = "".join(f'<option value="{k}">{v or "No tag"}</option>' for k, v in UPD_TAGS.items())
+    rows = ""
+    for u in items:
+        tag = UPD_TAGS.get(u.get("tag", ""), "")
+        text_html = "<p>" + E(u.get("text", "")) + "</p>" if u.get("text") else ""
+        rows += ("<li><time>" + E(time.strftime("%d %b %Y", time.gmtime(int(u["t"])))) + "</time><div><h3>" + E((tag + " " + u["title"]).strip()) + "</h3>"
+                 + text_html +
+                 '<form method="post" action="/admin/updates/delete" style="margin-top:var(--s3)"><input type="hidden" name="csrf" value="' + csrf + '">'
+                 '<input type="hidden" name="id" value="' + E(str(u["id"])) + '"><button class="btn ghost sm danger" type="submit">Delete</button></form></div></li>')
+    m = f'<div class="msg ok" role="status">{E(msg)}</div>' if msg else ""
+    published = ('<ul class="upd">' + rows + "</ul>") if rows else '<p class="note">Nothing published yet.</p>'
+    body = (
+        '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "updates") +
+        '<main id="top"><div class="wrap"><div class="ops-top"><div><h1>Updates</h1><p>Short notes about what changed. The latest five show on the site, newest first. Leave this empty and the section stays hidden.</p></div></div>'
+        f'{m}<form method="post" action="/admin/updates/add" class="panel"><input type="hidden" name="csrf" value="{csrf}">'
+        '<fieldset style="margin:0"><legend>New update</legend><div class="row"><div><label for="ut" style="margin-top:0">Title</label><input id="ut" name="title" maxlength="80" required placeholder="Giveaway rerolls added"></div>'
+        f'<div><label for="ug" style="margin-top:0">About</label><select id="ug" name="tag">{opts}</select></div></div>'
+        '<label for="ux">Details <span class="hint">(optional)</span></label><textarea id="ux" name="text" maxlength="400" style="min-height:6rem"></textarea></fieldset>'
+        '<button class="btn" type="submit">Publish update</button></form>'
+        f'<div class="ops-sec"><h2>Published</h2>{published}</div></div></main></body></html>'
+    )
+    return HEAD.format(title="Updates", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
+
+
+def media_page(csrf, msg="", kind="ok"):
+    cards = ""
+    for key, name in (("donut", "Donut"), ("pixel", "Pixel")):
+        u = shot_url(key)
+        pic = f'<img src="{u}" alt="Current {name} screenshot">' if u else '<div class="none">No screenshot yet</div>'
+        rm = (f'<form method="post" action="/admin/media/remove"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="key" value="{key}">'
+              '<button class="btn ghost sm danger" type="submit">Remove</button></form>') if u else ""
+        cards += (
+            f'<div><h2>{name}</h2>{pic}<form method="post" action="/admin/media/upload" enctype="multipart/form-data">'
+            f'<input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="key" value="{key}">'
+            f'<label for="f-{key}" style="margin-top:0">Replace image <span class="hint">(PNG, JPG or WebP, up to 5 MB)</span></label>'
+            f'<input id="f-{key}" type="file" name="file" accept="image/png,image/jpeg,image/webp" required>'
+            f'<p class="hint" style="margin:var(--s3) 0">Shown in the hero tile and the {name} section. 1600 by 1000 works best.</p>'
+            f'<button class="btn" type="submit">Upload</button></form>{rm}</div>')
+    m = f'<div class="msg {kind}" role="{"alert" if kind == "err" else "status"}">{E(msg)}</div>' if msg else ""
+    body = (
+        '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "media") +
+        f'<main id="top"><div class="wrap"><div class="ops-top"><div><h1>Media</h1><p>The screenshots shown for Donut and Pixel. Without one, the site shows a simple mark instead.</p></div></div>{m}'
+        f'<div class="mgrid ops-sec">{cards}</div></div></main></body></html>'
+    )
+    return HEAD.format(title="Media", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
 
 
 def ago(t):
@@ -988,6 +1196,41 @@ class Handler(BaseHTTPRequestHandler):
                          args=(f"New message from {name or 'someone'} ({reply}):\n{msg[:400]}",)).start()
         return self.redirect("/?sent=1#contact")
 
+    def media_upload(self):
+        tok = self.session()
+        if not tok:
+            return self.redirect("/admin")
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        ctype = self.headers.get("Content-Type", "")
+        if n <= 0 or n > MAX_UPLOAD + 20000 or not ctype.startswith("multipart/form-data"):
+            return self.send(413, media_page(csrf_for(tok), "That file is too big. The limit is 5 MB.", "err"), private=True)
+        fields, files = parse_multipart(ctype, self.rfile.read(n))
+        if not same(fields.get("csrf", ""), csrf_for(tok)):
+            return self.send(403, "Bad request token. Reload the page and try again.", "text/plain")
+        key, data = fields.get("key", ""), files.get("file", b"")
+        ext = sniff_image(data)
+        if key not in ("donut", "pixel") or not data or len(data) > MAX_UPLOAD:
+            return self.send(400, media_page(csrf_for(tok), "Choose an image up to 5 MB.", "err"), private=True)
+        if not ext:
+            return self.send(400, media_page(csrf_for(tok), "That file is not a PNG, JPG or WebP image.", "err"), private=True)
+        try:
+            os.makedirs(SHOTS_DIR, exist_ok=True)
+            for e in SHOT_TYPES:
+                try:
+                    os.remove(os.path.join(SHOTS_DIR, key + e))
+                except OSError:
+                    pass
+            dest = os.path.join(SHOTS_DIR, key + ext)
+            with open(dest + ".tmp", "wb") as fh:
+                fh.write(data)
+            os.replace(dest + ".tmp", dest)
+        except OSError:
+            return self.send(500, media_page(csrf_for(tok), "Could not save the file on the server.", "err"), private=True)
+        return self.send(200, media_page(csrf_for(tok), f"{key.title()} screenshot updated."), private=True)
+
     # routes
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
@@ -1014,6 +1257,15 @@ class Handler(BaseHTTPRequestHandler):
             if not tok:
                 return self.send(200, admin_login_page(), private=True)
             return self.send(200, admin_page(load(), csrf_for(tok)), private=True)
+        if path == "/status":
+            return self.send(200, status_page(load()), extra=[("Cache-Control", "public, max-age=30")])
+        if path in ("/admin/updates", "/admin/media"):
+            if not ADMIN_ON:
+                return self.send(503, NOT_ENABLED, private=True)
+            tok = self.session()
+            if not tok:
+                return self.send(200, admin_login_page(), private=True)
+            return self.send(200, (updates_admin_page if path == "/admin/updates" else media_page)(csrf_for(tok)), private=True)
         if path in ("/admin/inbox", "/admin/backup"):
             if not ADMIN_ON:
                 return self.send(503, NOT_ENABLED, private=True)
@@ -1046,6 +1298,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.contact(form)
         if not path.startswith("/admin") or not ADMIN_ON:
             return self.send(404, "Not found", "text/plain")
+        if path == "/admin/media/upload":
+            return self.media_upload()
         form = self.form()
         if form is None:
             return self.send(413, "Too large", "text/plain")
@@ -1084,6 +1338,31 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, admin_page(clean, csrf_for(tok), err, "err"), private=True)
             save(clean)
             return self.send(200, admin_page(clean, csrf_for(tok), "Saved. Your changes are live.", "ok"), private=True)
+        if path == "/admin/updates/add":
+            title, text, tag = (form.get(k, [""])[0].replace("\r\n", "\n").strip() for k in ("title", "text", "tag"))
+            if not title or len(title) > 80 or len(text) > 400 or tag not in UPD_TAGS:
+                return self.send(400, updates_admin_page(csrf_for(tok), "Add a title (up to 80 characters). Details can be 400 at most."), private=True)
+            with _updlock:
+                UPDATES.insert(0, {"id": secrets.token_hex(6), "t": int(time.time()), "title": title, "text": text, "tag": tag})
+                del UPDATES[200:]
+            upd_save()
+            return self.send(200, updates_admin_page(csrf_for(tok), "Published."), private=True)
+        if path == "/admin/updates/delete":
+            ident = form.get("id", [""])[0]
+            with _updlock:
+                UPDATES[:] = [u for u in UPDATES if u["id"] != ident]
+            upd_save()
+            return self.send(200, updates_admin_page(csrf_for(tok), "Deleted."), private=True)
+        if path == "/admin/media/remove":
+            key = form.get("key", [""])[0]
+            if key not in ("donut", "pixel"):
+                return self.send(400, "Bad request", "text/plain")
+            for e in SHOT_TYPES:
+                try:
+                    os.remove(os.path.join(SHOTS_DIR, key + e))
+                except OSError:
+                    pass
+            return self.send(200, media_page(csrf_for(tok), f"{key.title()} screenshot removed."), private=True)
         if path == "/admin/inbox/act":
             ident, act = form.get("id", [""])[0], form.get("act", [""])[0]
             if act not in ("read", "unread", "delete"):
@@ -1118,6 +1397,7 @@ if __name__ == "__main__":
     if len(_SS) < 16:
         print("NOTE: SESSION_SECRET missing or under 16 chars. Using a random key; logins reset on restart.", flush=True)
     msgs_load()
+    upd_load()
     if MONITOR_INTERVAL > 0:
         threading.Thread(target=monitor_loop, daemon=True).start()
     else:

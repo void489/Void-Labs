@@ -3,3 +3,4 @@ monitor.json
 __pycache__/
 *.tmp
 messages.json
+updates.json
