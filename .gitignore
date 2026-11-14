@@ -2,3 +2,4 @@ data.json
 monitor.json
 __pycache__/
 *.tmp
+messages.json

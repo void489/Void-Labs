@@ -7,6 +7,7 @@ Environment variables (set them in the bot-hosting.net panel):
   SESSION_SECRET  optional extra secret used to sign login cookies
   DISCORD_WEBHOOK_URL  optional: Discord webhook that gets a message when a site goes down or recovers
   MONITOR_INTERVAL     optional: seconds between health checks (default 60, 0 turns the monitor off)
+  MESSAGES_FILE        optional path for the contact inbox (default messages.json next to main.py)
   MONITOR_URLS         optional override, e.g. "donut=https://a.example,pixel=https://b.example,site=https://c.example"
 """
 import hashlib, hmac, html, json, os, re, secrets, ssl, threading, time
@@ -42,6 +43,9 @@ DEFAULTS = {
     "discord": "",
     "donut_status": "online",
     "pixel_status": "online",
+    "banner": "",
+    "donut_note": "",
+    "pixel_note": "",
 }
 
 _lock = threading.Lock()
@@ -85,11 +89,16 @@ def validate(form):
     out = {
         "name": g("name"), "about": g("about"), "email": g("email"), "discord": g("discord"),
         "donut_status": g("donut_status"), "pixel_status": g("pixel_status"),
+        "banner": g("banner"), "donut_note": g("donut_note"), "pixel_note": g("pixel_note"),
     }
     if not out["name"] or len(out["name"]) > 40:
         return out, "Name must be 1 to 40 characters."
     if len(out["about"]) > 1500:
         return out, "About text is too long (max 1500 characters)."
+    if len(out["banner"]) > 140:
+        return out, "Announcement is too long (max 140 characters)."
+    if len(out["donut_note"]) > 120 or len(out["pixel_note"]) > 120:
+        return out, "Status notes can be 120 characters at most."
     if out["email"] and (len(out["email"]) > 120 or not EMAIL_RE.match(out["email"])):
         return out, "That doesn't look like a valid email address."
     if out["discord"]:
@@ -127,6 +136,38 @@ def csrf_for(token):
 
 def same(a, b):
     return hmac.compare_digest(a.encode(), b.encode())
+
+
+# ---------- contact inbox ----------
+MESSAGES_FILE = os.getenv("MESSAGES_FILE") or os.path.join(BASE, "messages.json")
+_msglock = threading.Lock()
+_msg_hits = {}  # ip -> [timestamps]
+MSGS = []  # newest first: {"id","t","name","reply","msg","read"}
+
+
+def msgs_load():
+    try:
+        with open(MESSAGES_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if isinstance(d, list):
+            MSGS[:] = [x for x in d if isinstance(x, dict) and "id" in x][:500]
+    except (OSError, ValueError):
+        pass
+
+
+def msgs_save():
+    tmp = MESSAGES_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(MSGS[:500], f)
+        os.replace(tmp, MESSAGES_FILE)
+    except OSError:
+        pass
+
+
+def unread_count():
+    with _msglock:
+        return sum(1 for m in MSGS if not m.get("read"))
 
 
 # ---------- monitor ----------
@@ -204,7 +245,7 @@ def post_webhook(text):
     if not WEBHOOK_OK:
         return
     try:
-        body = json.dumps({"content": text, "username": "Void Labs Monitor"}).encode()
+        body = json.dumps({"content": text[:1900], "username": "Void Labs", "allowed_mentions": {"parse": []}}).encode()
         req = urllib.request.Request(WEBHOOK, data=body, headers={"Content-Type": "application/json", "User-Agent": UA})
         urllib.request.urlopen(req, timeout=8).read()
     except Exception:
@@ -445,6 +486,27 @@ textarea{min-height:12rem;resize:vertical;line-height:1.55}
 .lost h1{font-size:clamp(6rem,24vw,18rem);color:var(--violet)}
 .lost p{font-size:1.25rem;margin:var(--s5) 0 var(--s6);color:var(--muted)}
 
+/* banner + notes + contact form + inbox */
+.banner{background:var(--violet);color:var(--void);font-weight:600;text-align:center;padding:var(--s3) var(--gutter)}
+.p-note{margin-top:var(--s2);color:var(--text);font-weight:500;max-width:28em}
+.cform{margin-top:var(--s8);display:grid;grid-template-columns:1fr 1fr;gap:var(--s5) var(--s6);max-width:48rem}
+.cform h3{grid-column:1/-1;font:700 1.5rem/1.1 var(--display);letter-spacing:-.02em;margin:0}
+.cform label{margin:0 0 var(--s2)}
+.cform .full{grid-column:1/-1}
+.cform .btn{justify-self:start;margin:0}
+.hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+.flash{grid-column:1/-1;margin:0}
+.flash.msg{margin-bottom:0}
+.mrow{border-top:1px solid var(--line-2);padding:var(--s5) 0;display:grid;grid-template-columns:minmax(0,14rem) minmax(0,1fr) auto;gap:var(--s4) var(--s6);align-items:start}
+.mrow:last-child{border-bottom:1px solid var(--line-2)}
+.mrow.unread .who{color:var(--text)}.mrow .who{color:var(--muted)}
+.mrow .who strong{display:block;color:var(--text);font-weight:700}
+.mrow .who a{color:var(--violet-text);overflow-wrap:anywhere}.mrow .who a:hover{text-decoration:underline}
+.mrow .body{white-space:pre-wrap;overflow-wrap:anywhere;max-width:44em}
+.mrow .acts{display:flex;gap:var(--s2);flex-wrap:wrap}
+.dot{display:inline-block;width:.55rem;height:.55rem;border-radius:50%;background:var(--violet);margin-right:var(--s2)}
+.badge{background:var(--violet);color:var(--void);border-radius:99px;font-size:.8125rem;padding:.05rem .45rem;margin-left:var(--s2)}
+.btn.danger:hover{background:var(--bad);border-color:var(--bad);color:var(--void)}
 /* monitor */
 .admin-nav{display:flex;gap:var(--s5)}
 .admin-nav a{padding:var(--s2) 0;font-weight:600;color:var(--muted);border-bottom:1px solid transparent}
@@ -479,6 +541,7 @@ textarea{min-height:12rem;resize:vertical;line-height:1.55}
 .ops-sec h2{font:700 1.5rem/1.1 var(--display);letter-spacing:-.02em;margin:var(--s7) 0 var(--s2);max-width:none}
 .note{color:var(--muted)}
 @media(max-width:62rem){
+.mrow{grid-template-columns:1fr}.cform{grid-template-columns:1fr}
 .svc{grid-template-columns:1fr}.inc li{grid-template-columns:1fr;gap:var(--s1)}
 
 .project-in,.project.flip .project-in,.about-in{grid-template-columns:1fr}
@@ -568,7 +631,7 @@ def status_html(status):
     return f'<span class="st st-{status}">{E(PUBLIC_LABEL[status])}</span>'
 
 
-def project(key, flip, url, host, fallback, name, status, desc, chips):
+def project(key, flip, url, host, fallback, name, status, desc, chips, note=""):
     feats = "".join(f"<li>{E(n)}<span>{E(d)}</span></li>" for n, d in chips)
     f = shot_file(key)
     if f:
@@ -578,22 +641,23 @@ def project(key, flip, url, host, fallback, name, status, desc, chips):
         art = f'<div class="shot" aria-hidden="true">{fallback}</div>'
     return (
         f'<article class="project{" flip" if flip else ""}" id="{key}"><div class="wrap project-in"><div class="p-copy">'
-        f'{status_html(status)}<h3>{name}</h3><p class="desc">{desc}</p><ul class="feats" aria-label="{name} features">{feats}</ul>'
+        f'{status_html(status)}{f"<p class=p-note>{E(note)}</p>" if note else ""}<h3>{name}</h3><p class="desc">{desc}</p><ul class="feats" aria-label="{name} features">{feats}</ul>'
         f'<div class="cta"><a class="btn" href="{url}">Open dashboard{ARROW}</a><span class="host">{host}</span></div></div>'
         f'<div class="p-art">{art}</div></div></article>'
     )
 
 
-def page_shell(nav, body, foot):
+def page_shell(nav, body, foot, banner=""):
+    b = f'<div class="banner" role="status">{E(banner)}</div>' if banner else ""
     return (
-        '<body><a class="skip" href="#top">Skip to content</a>'
+        '<body><a class="skip" href="#top">Skip to content</a>' + b +
         f'<header class="site-head"><div class="wrap"><a class="mark" href="/" aria-label="Void Labs home">{LOGO}Void Labs</a>'
         f'<nav aria-label="Page sections">{nav}</nav></div></header>'
         f'<main id="top">{body}</main>{foot}</body></html>'
     )
 
 
-def home_page(s):
+def home_page(s, notice=""):
     s = effective(s)
     paras = "".join(f"<p>{E(p.strip())}</p>" for p in s["about"].split("\n\n") if p.strip())
     has_contact = bool(s["email"] or s["discord"])
@@ -607,24 +671,37 @@ def home_page(s):
         "Keeps your Minecraft account online while you're away, and tells you what happened. Run it from the web dashboard or from Discord.",
         [("Player stats", "Every player, on the web."), ("Payments", "Alerts when money arrives."),
          ("AI chat", "Built into the bot."), ("Chat logs", "Whispers and messages, recorded."),
-         ("Admin dashboard", "Staff controls, online.")],
+         ("Admin dashboard", "Staff controls, online.")], s["donut_note"],
     )
     pixel = project(
         "pixel", True, "https://pixel.voidlabs.fun", "pixel.voidlabs.fun", PIXEL_ART, "Pixel", s["pixel_status"],
         "A community bot that covers the daily work of running a server, with a full web dashboard to manage it.",
         [("Tickets", "Support requests, tracked."), ("Giveaways", "Start, run and draw."),
          ("Applications", "Collect and review them."), ("Moderation", "Tools to keep order."),
-         ("Staff tools", "For the people on your team.")],
+         ("Staff tools", "For the people on your team.")], s["pixel_note"],
     )
-    nav = '<a href="#projects">Work</a><a href="#about">About</a>' + ('<a href="#contact">Contact</a>' if has_contact else "")
+    nav = '<a href="#projects">Work</a><a href="#about">About</a>' + '<a href="#contact">Contact</a>'
     tiles = (tile("donut", "Donut", s["donut_status"], TILE_DONUT) + tile("pixel", "Pixel", s["pixel_status"], TILE_PIXEL))
-    contact = ""
-    if has_contact:
-        contact = (
-            '<section class="contact" id="contact"><div class="wrap contact-in"><h2>Say hello.</h2><p class="sub">Questions, bug reports or an idea for a bot. Email or Discord both work.</p>'
-            f'<div class="links">{links}</div></div></section>'
-        )
-    foot_nav = '<a href="#projects">Work</a><a href="#about">About</a>' + ('<a href="#contact">Contact</a>' if has_contact else "")
+    flash = {"sent": '<p class="flash msg ok" role="status">Sent. Thanks, I&rsquo;ll get back to you.</p>',
+             "err1": '<p class="flash msg err" role="alert">Add a way to reach you and a message (up to 1000 characters).</p>',
+             "err2": '<p class="flash msg err" role="alert">Too many messages for now. Try again in an hour.</p>',
+             "err3": '<p class="flash msg err" role="alert">That took too long or too short. Reload the page and try again.</p>'}.get(notice, "")
+    tok = str(int(time.time()))
+    tok += "." + _sig("f" + tok)
+    form = (
+        '<form class="cform" method="post" action="/contact"><h3>Or send a message</h3>' + flash +
+        f'<input type="hidden" name="t" value="{tok}">'
+        '<div class="hp" aria-hidden="true"><label>Leave empty<input name="website" tabindex="-1" autocomplete="off"></label></div>'
+        '<div><label for="cn">Name <span class="hint">(optional)</span></label><input id="cn" name="name" maxlength="60" autocomplete="name"></div>'
+        '<div><label for="cr">How should I reply?</label><input id="cr" name="reply" maxlength="120" required placeholder="Email or Discord username"></div>'
+        '<div class="full"><label for="cm">Message</label><textarea id="cm" name="message" maxlength="1000" required></textarea></div>'
+        '<button class="btn" type="submit">Send message</button></form>'
+    )
+    contact = (
+        '<section class="contact" id="contact"><div class="wrap contact-in"><h2>Say hello.</h2><p class="sub">Questions, bug reports or an idea for a bot. Email, Discord or the form below.</p>'
+        f'<div class="links">{links}</div>{form}</div></section>'
+    )
+    foot_nav = '<a href="#projects">Work</a><a href="#about">About</a>' + '<a href="#contact">Contact</a>'
     body = (
         '<section class="hero"><div class="wrap hero-in"><div><h1><span class="ln"><span>Bots and</span></span>'
         '<span class="ln"><span>dashboards,</span></span><span class="ln"><span>built right.</span></span></h1>'
@@ -646,7 +723,7 @@ def home_page(s):
         '<footer class="site-foot"><div class="wrap foot-row">'
         f'<span>&copy; {time.gmtime().tm_year} Void Labs. Built in the void.</span><nav aria-label="Footer">{foot_nav}</nav></div></footer>'
     )
-    return HEAD.format(title="Void Labs | Bots and dashboards", css=CSS, meta='<meta name="description" content="Void Labs is a one-person software studio. Discord bots and web dashboards, including Donut and Pixel.">') + page_shell(nav, body, foot)
+    return HEAD.format(title="Void Labs | Bots and dashboards", css=CSS, meta='<meta name="description" content="Void Labs is a one-person software studio. Discord bots and web dashboards, including Donut and Pixel.">') + page_shell(nav, body, foot, s["banner"])
 
 
 def admin_login_page(msg=""):
@@ -662,10 +739,12 @@ def admin_login_page(msg=""):
 
 
 def admin_head(csrf, active):
+    unread = unread_count()
+    badge = f'<span class="badge" aria-label="{unread} unread">{unread}</span>' if unread else ""
     cur = lambda n: ' aria-current="page"' if active == n else ""
     return (
         f'<header class="site-head"><div class="wrap"><a class="mark" href="/">{LOGO}View site</a>'
-        f'<nav class="admin-nav" aria-label="Admin"><a href="/admin"{cur("settings")}>Settings</a><a href="/admin/ops"{cur("monitor")}>Monitor</a></nav>'
+        f'<nav class="admin-nav" aria-label="Admin"><a href="/admin"{cur("settings")}>Settings</a><a href="/admin/ops"{cur("monitor")}>Monitor</a><a href="/admin/inbox"{cur("inbox")}>Inbox{badge}</a></nav>'
         f'<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{csrf}">'
         '<button class="btn ghost sm" type="submit">Log out</button></form></div></header>'
     )
@@ -683,12 +762,18 @@ def admin_page(s, csrf, msg="", kind="ok"):
         '<body><a class="skip" href="#top">Skip to content</a>'
         + admin_head(csrf, "settings") +
         '<main id="top"><div class="wrap admin-grid">'
-        f'<aside class="admin-side"><h1>Site settings</h1><p>Edits appear on the public site as soon as you save.</p><ul aria-label="Current status">{live}</ul></aside>'
+        f'<aside class="admin-side"><h1>Site settings</h1><p>Edits appear on the public site as soon as you save.</p><ul aria-label="Current status">{live}</ul><a class="btn ghost sm" href="/admin/backup">Download backup</a></aside>'
         f'<div>{m}<form method="post" action="/admin/save"><input type="hidden" name="csrf" value="{csrf}">'
         '<fieldset><legend>Product status</legend><div class="row"><div><label for="ds">Donut status</label>'
         f'<select id="ds" name="donut_status">{opts(s["donut_status"])}</select></div>'
         '<div><label for="ps">Pixel status</label>'
-        f'<select id="ps" name="pixel_status">{opts(s["pixel_status"])}</select></div></div></fieldset>'
+        f'<select id="ps" name="pixel_status">{opts(s["pixel_status"])}</select></div></div>'
+        '<label for="dn">Donut note <span class="hint">(shown under its status, e.g. &ldquo;Back around 18:00&rdquo;)</span></label>'
+        f'<input id="dn" name="donut_note" maxlength="120" value="{E(s["donut_note"])}">'
+        '<label for="pn">Pixel note <span class="hint">(optional)</span></label>'
+        f'<input id="pn" name="pixel_note" maxlength="120" value="{E(s["pixel_note"])}"></fieldset>'
+        '<fieldset><legend>Announcement</legend><label for="bn" style="margin-top:0">Banner <span class="hint">(top of the site, hidden if empty)</span></label>'
+        f'<input id="bn" name="banner" maxlength="140" value="{E(s["banner"])}" placeholder="Pixel is updating tonight at 20:00 UTC"></fieldset>'
         '<fieldset><legend>Public profile</legend>'
         '<label for="n" style="margin-top:0">Your name <span class="hint">(shown in &ldquo;Hi, I&rsquo;m &hellip;&rdquo;)</span></label>'
         f'<input id="n" name="name" maxlength="40" value="{E(s["name"])}" required>'
@@ -702,6 +787,35 @@ def admin_page(s, csrf, msg="", kind="ok"):
     )
     return HEAD.format(title="Admin", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
 
+
+
+def inbox_page(csrf, msg=""):
+    with _msglock:
+        items = list(MSGS)
+    rows = ""
+    for m in items:
+        reply = str(m.get("reply", ""))
+        link = (f'<a href="mailto:{E(reply)}">{E(reply)}</a>' if EMAIL_RE.match(reply) else E(reply))
+        unread = not m.get("read")
+        ident = E(str(m["id"]))
+        def btn(act, label, extra=""):
+            return (f'<form method="post" action="/admin/inbox/act"><input type="hidden" name="csrf" value="{csrf}">'
+                    f'<input type="hidden" name="id" value="{ident}"><button class="btn ghost sm {extra}" name="act" value="{act}" type="submit">{label}</button></form>')
+        rows += (
+            f'<div class="mrow{" unread" if unread else ""}"><div class="who"><strong>{"<span class=dot></span>" if unread else ""}{E(m.get("name") or "No name")}</strong>'
+            f'{link}<br>{E(time.strftime("%d %b, %H:%M UTC", time.gmtime(int(m.get("t", 0)))))}</div>'
+            f'<div class="body">{E(str(m.get("msg", "")))}</div>'
+            f'<div class="acts">{btn("unread" if not unread else "read", "Mark unread" if not unread else "Mark read")}{btn("delete", "Delete", "danger")}</div></div>'
+        )
+    empty = '<p class="note">No messages yet. They arrive here when someone uses the contact form.</p>'
+    m_ = f'<div class="msg ok" role="status">{E(msg)}</div>' if msg else ""
+    body = (
+        '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "inbox") +
+        f'<main id="top"><div class="wrap"><div class="ops-top"><div><h1>Inbox</h1><p>Messages from the contact form on the site. '
+        f'{"Discord gets a ping for each new one." if WEBHOOK_OK else "Set DISCORD_WEBHOOK_URL to get a Discord ping for each new one."}</p></div></div>'
+        f'{m_}<div class="ops-sec">{rows or empty}</div></div></main></body></html>'
+    )
+    return HEAD.format(title="Inbox", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
 
 
 def ago(t):
@@ -844,11 +958,44 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return parse_qs(self.rfile.read(n).decode("utf-8", "replace"), keep_blank_values=True)
 
+    def contact(self, form):
+        g = lambda k: (form.get(k, [""])[0] or "").replace("\r\n", "\n").strip()
+        if g("website"):  # honeypot: bots fill it, people never see it
+            return self.redirect("/?sent=1#contact")
+        now = time.time()
+        try:
+            ts, sig = g("t").split(".", 1)
+            if not (hmac.compare_digest(sig, _sig("f" + ts)) and 3 <= now - int(ts) <= 7200):
+                return self.redirect("/?err=3#contact")
+        except ValueError:
+            return self.redirect("/?err=3#contact")
+        ip = self.ip()
+        hits = [t for t in _msg_hits.get(ip, []) if t > now - 3600]
+        if len(hits) >= 3:
+            return self.redirect("/?err=2#contact")
+        name, reply, msg = g("name")[:60], g("reply"), g("message")
+        if not (3 <= len(reply) <= 120) or not (1 <= len(msg) <= 1000):
+            return self.redirect("/?err=1#contact")
+        _msg_hits[ip] = hits + [now]
+        if len(_msg_hits) > 2000:
+            for k in [k for k, v in _msg_hits.items() if not v or v[-1] < now - 3600]:
+                _msg_hits.pop(k, None)
+        with _msglock:
+            MSGS.insert(0, {"id": secrets.token_hex(6), "t": int(now), "name": name, "reply": reply, "msg": msg, "read": False})
+            del MSGS[500:]
+        msgs_save()
+        threading.Thread(target=post_webhook, daemon=True,
+                         args=(f"New message from {name or 'someone'} ({reply}):\n{msg[:400]}",)).start()
+        return self.redirect("/?sent=1#contact")
+
     # routes
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
         if path == "/":
-            return self.send(200, home_page(load()), extra=[("Cache-Control", "public, max-age=30")])
+            q = parse_qs(urlparse(self.path).query)
+            notice = "sent" if "sent" in q else ("err" + q["err"][0] if q.get("err", [""])[0] in ("1", "2", "3") else "")
+            return self.send(200, home_page(load(), notice),
+                             extra=[("Cache-Control", "no-store" if notice else "public, max-age=30")])
         if path == "/healthz":
             return self.send(200, "ok", "text/plain")
         if path == "/app.js":
@@ -867,6 +1014,18 @@ class Handler(BaseHTTPRequestHandler):
             if not tok:
                 return self.send(200, admin_login_page(), private=True)
             return self.send(200, admin_page(load(), csrf_for(tok)), private=True)
+        if path in ("/admin/inbox", "/admin/backup"):
+            if not ADMIN_ON:
+                return self.send(503, NOT_ENABLED, private=True)
+            tok = self.session()
+            if not tok:
+                return self.send(200, admin_login_page(), private=True)
+            if path == "/admin/inbox":
+                return self.send(200, inbox_page(csrf_for(tok)), private=True)
+            with _msglock:
+                dump = {"exported": int(time.time()), "settings": load(), "messages": list(MSGS)}
+            return self.send(200, json.dumps(dump, indent=2), "application/json",
+                             extra=[("Content-Disposition", 'attachment; filename="void-labs-backup.json"')], private=True)
         if path == "/admin/ops":
             if not ADMIN_ON:
                 return self.send(503, NOT_ENABLED, private=True)
@@ -880,6 +1039,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path.rstrip("/")
+        if path == "/contact":
+            form = self.form()
+            if form is None:
+                return self.send(413, "Too large", "text/plain")
+            return self.contact(form)
         if not path.startswith("/admin") or not ADMIN_ON:
             return self.send(404, "Not found", "text/plain")
         form = self.form()
@@ -920,6 +1084,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, admin_page(clean, csrf_for(tok), err, "err"), private=True)
             save(clean)
             return self.send(200, admin_page(clean, csrf_for(tok), "Saved. Your changes are live.", "ok"), private=True)
+        if path == "/admin/inbox/act":
+            ident, act = form.get("id", [""])[0], form.get("act", [""])[0]
+            if act not in ("read", "unread", "delete"):
+                return self.send(400, "Bad request", "text/plain")
+            with _msglock:
+                for i, m in enumerate(MSGS):
+                    if m["id"] == ident:
+                        if act == "delete":
+                            MSGS.pop(i)
+                        else:
+                            m["read"] = act == "read"
+                        break
+            msgs_save()
+            return self.send(200, inbox_page(csrf_for(tok), "Done."), private=True)
         if path == "/admin/ops/check":
             check_all()
             return self.send(200, ops_page(load(), csrf_for(tok), "Checked just now."), private=True)
@@ -939,6 +1117,7 @@ if __name__ == "__main__":
         print("WARNING: ADMIN_PASSWORD missing or shorter than 10 characters. /admin is disabled.", flush=True)
     if len(_SS) < 16:
         print("NOTE: SESSION_SECRET missing or under 16 chars. Using a random key; logins reset on restart.", flush=True)
+    msgs_load()
     if MONITOR_INTERVAL > 0:
         threading.Thread(target=monitor_loop, daemon=True).start()
     else:
