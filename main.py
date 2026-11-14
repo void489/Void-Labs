@@ -170,7 +170,7 @@ h1 .ln>span{display:block}
 .tiles{display:grid;grid-template-columns:1fr 1fr;gap:var(--s4)}
 .tile{display:flex;flex-direction:column;background:var(--char);border:1px solid var(--line-2);border-radius:var(--r);overflow:hidden;transition:border-color .25s,transform .35s cubic-bezier(.2,.8,.2,1)}
 .tile:hover{border-color:var(--violet);transform:translateY(-4px)}
-.t-art{position:relative;aspect-ratio:3/4;background:var(--void);border-bottom:1px solid var(--line-2);overflow:hidden;display:flex;align-items:center;justify-content:center}
+.t-art{position:relative;aspect-ratio:4/3;background:var(--void);border-bottom:1px solid var(--line-2);overflow:hidden;display:flex;align-items:center;justify-content:center}
 .t-art img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:top left}
 .t-art svg{width:62%;height:auto}
 .t-art .px{width:48%}
@@ -304,7 +304,7 @@ h1{font-size:clamp(2.6rem,12.5vw,7rem)}
 @media(max-width:40rem){
 :root{--bar:4rem}
 .site-head nav{gap:var(--s4)}
-.t-art{aspect-ratio:1/1}.t-cap{padding:var(--s3)}.t-cap .nm{font-size:1.25rem}
+.t-art{aspect-ratio:4/3}.t-cap{padding:var(--s3)}.t-cap .nm{font-size:1.25rem}
 .focus li,.feats li{grid-template-columns:1fr;gap:var(--s1)}
 .row{grid-template-columns:1fr}
 .links small{display:none}
@@ -415,9 +415,9 @@ def home_page(s):
         links += f'<a href="{E(s["discord"])}" rel="noopener" target="_blank"><span>{E(s["discord"].replace("https://", ""))}</span><small>Discord</small></a>'
     donut = project(
         "donut", False, "https://donut.voidlabs.fun", "donut.voidlabs.fun", DONUT_ART, "Donut", s["donut_status"],
-        "The bot and dashboard behind the Donut network. Players, payments and chat in one place, with admin tools to match.",
-        [("Player stats", "Every player, on the web."), ("Payments", "Tracked in one place."),
-         ("AI chat", "Built into the bot."), ("Chat logs", "A record of what was said."),
+        "Keeps your Minecraft account online while you're away, and tells you what happened. Run it from the web dashboard or from Discord.",
+        [("Player stats", "Every player, on the web."), ("Payments", "Alerts when money arrives."),
+         ("AI chat", "Built into the bot."), ("Chat logs", "Whispers and messages, recorded."),
          ("Admin dashboard", "Staff controls, online.")],
     )
     pixel = project(
