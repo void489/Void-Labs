@@ -22,3 +22,12 @@
 - **`/status`** (public): live state of Donut and Pixel from the monitor, 24 h uptime, recent checks and incidents. A manual Maintenance or Offline setting wins over the monitor.
 - **Updates:** `/admin/updates` publishes short dated notes. The latest five show on the home page (section and nav link appear only when there is at least one). Stored in `updates.json` (or `UPDATES_FILE`).
 - **Media:** `/admin/media` uploads or removes the Donut and Pixel screenshots (PNG, JPG or WebP, up to 5 MB, checked by file signature). Files are written to `shots/`. If you redeploy from git, keep that folder or re-upload.
+
+## Game prices (admin)
+
+`/admin/prices` edits the Minecraft server's sell worth and shop prices (Oneblock). The game plugin downloads `/prices.json` every few minutes, so edits go live in game without touching the server files.
+
+- **Protect the download:** set `PRICES_KEY` (any long random string). `/prices.json` then needs `Authorization: Bearer <key>` or `?key=<key>`. Put the same key in the plugin config as `economy.prices-key`.
+- **Starting values:** `prices.default.json` is used until the first save. Saved prices live in `prices.json` (or `PRICES_FILE`) and are included in Settings → Download backup.
+- **Rules the game plugin enforces:** a shop price is raised to at least 3x the item's sell worth; items with no worth sell for 25% of their shop price. The editor warns you when a price is too low.
+- Up to 7 shop categories (the in-game menu fits 7).

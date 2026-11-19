@@ -9,6 +9,8 @@ Environment variables (set them in the bot-hosting.net panel):
   MONITOR_INTERVAL     optional: seconds between health checks (default 60, 0 turns the monitor off)
   MESSAGES_FILE        optional path for the contact inbox (default messages.json next to main.py)
   UPDATES_FILE         optional path for the updates log (default updates.json next to main.py)
+  PRICES_KEY           optional: if set, /prices.json needs "Authorization: Bearer <key>" (or ?key=<key>). The Minecraft plugin sends it.
+  PRICES_FILE          optional path for the game prices (default prices.json next to main.py)
   MONITOR_URLS         optional override, e.g. "donut=https://a.example,pixel=https://b.example,site=https://c.example"
 """
 import hashlib, hmac, html, json, os, re, secrets, ssl, threading, time
@@ -166,6 +168,80 @@ def upd_save():
         os.replace(tmp, UPDATES_FILE)
     except OSError:
         pass
+
+
+# ---------- game prices (read by the Minecraft plugin, edited in /admin/prices) ----------
+PRICES_FILE = os.getenv("PRICES_FILE") or os.path.join(BASE, "prices.json")
+PRICES_DEFAULT = os.path.join(BASE, "prices.default.json")
+PRICES_KEY = os.getenv("PRICES_KEY") or ""
+_pricelock = threading.Lock()
+PRICES = {"version": 1, "updated": 0}
+_MAT = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
+_MODE = re.compile(r"^[a-z0-9_]{1,20}$")
+_CATID = re.compile(r"^[a-z0-9_]{1,24}$")
+
+
+def prices_clean(d):
+    """Validate and normalise an edited prices document. Returns (clean, error)."""
+    if not isinstance(d, dict):
+        return None, "Not a prices file."
+    out = {"version": 1, "updated": int(time.time())}
+    for mode, md in d.items():
+        if mode in ("version", "updated"):
+            continue
+        if not _MODE.match(str(mode)) or not isinstance(md, dict):
+            return None, "Bad game mode name."
+        worth, cats = md.get("worth", {}), md.get("categories", {})
+        if not isinstance(worth, dict) or not isinstance(cats, dict):
+            return None, "Bad price tables."
+        if len(worth) > 4000 or len(cats) > 7:
+            return None, "Too many items or categories (max 4000 worth entries, 7 categories)."
+        cw = {}
+        for name, v in worth.items():
+            if not _MAT.match(str(name)) or isinstance(v, bool) or not isinstance(v, (int, float)) or not (0 <= v <= 100000000):
+                return None, "Bad sell worth for " + str(name)[:40] + "."
+            cw[name] = round(float(v), 2) if v != int(v) else int(v)
+        cc = {}
+        for cid, c in cats.items():
+            if not _CATID.match(str(cid)) or not isinstance(c, dict):
+                return None, "Bad category id."
+            name, icon, items = c.get("name", cid), c.get("icon", "CHEST"), c.get("items", {})
+            if not isinstance(name, str) or len(name) > 60 or not isinstance(icon, str) or not _MAT.match(icon) or not isinstance(items, dict) or len(items) > 1500:
+                return None, "Bad category " + str(cid)[:24] + "."
+            ci = {}
+            for iname, p in items.items():
+                if not _MAT.match(str(iname)) or isinstance(p, bool) or not isinstance(p, (int, float)) or not (1 <= p <= 1000000000):
+                    return None, "Bad shop price for " + str(iname)[:40] + "."
+                ci[iname] = int(round(p))
+            cc[cid] = {"name": name, "icon": icon, "items": ci}
+        out[mode] = {"worth": cw, "categories": cc}
+    if len(out) <= 2:
+        return None, "No game mode in the file."
+    return out, None
+
+
+def prices_load():
+    for path in (PRICES_FILE, PRICES_DEFAULT):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                clean, err = prices_clean(json.load(f))
+            if clean:
+                with _pricelock:
+                    PRICES.clear()
+                    PRICES.update(clean)
+                return
+        except (OSError, ValueError):
+            continue
+
+
+def prices_save(clean):
+    tmp = PRICES_FILE + ".tmp"
+    with _pricelock:
+        PRICES.clear()
+        PRICES.update(clean)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(PRICES, f, indent=1)
+        os.replace(tmp, PRICES_FILE)
 
 
 # ---------- screenshot media ----------
@@ -836,7 +912,7 @@ def admin_head(csrf, active):
     cur = lambda n: ' aria-current="page"' if active == n else ""
     return (
         f'<header class="site-head adm"><div class="wrap"><a class="mark" href="/">{LOGO}View site</a>'
-        f'<nav class="admin-nav" aria-label="Admin"><a href="/admin"{cur("settings")}>Settings</a><a href="/admin/ops"{cur("monitor")}>Monitor</a><a href="/admin/inbox"{cur("inbox")}>Inbox{badge}</a><a href="/admin/updates"{cur("updates")}>Updates</a><a href="/admin/media"{cur("media")}>Media</a></nav>'
+        f'<nav class="admin-nav" aria-label="Admin"><a href="/admin"{cur("settings")}>Settings</a><a href="/admin/ops"{cur("monitor")}>Monitor</a><a href="/admin/inbox"{cur("inbox")}>Inbox{badge}</a><a href="/admin/updates"{cur("updates")}>Updates</a><a href="/admin/prices"{cur("prices")}>Prices</a><a href="/admin/media"{cur("media")}>Media</a></nav>'
         f'<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{csrf}">'
         '<button class="btn ghost sm" type="submit">Log out</button></form></div></header>'
     )
@@ -1001,6 +1077,219 @@ def updates_admin_page(csrf, msg=""):
         f'<div class="ops-sec"><h2>Published</h2>{published}</div></div></main></body></html>'
     )
     return HEAD.format(title="Updates", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
+
+
+PRICES_JS = r"""(function () {
+  "use strict";
+  var root = document.getElementById("pe");
+  if (!root) return;
+  var csrf = root.getAttribute("data-csrf");
+  var MARKUP = 3, RATIO = 0.25;
+  var data = null, mode = "oneblock", tab = "worth", filter = "", dirty = false, flash = null;
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  function plain(s) { return String(s).replace(/&[0-9a-fk-or]/gi, ""); }
+  function setDirty(v) { dirty = v; var s = document.getElementById("pe-state"); if (s) s.textContent = v ? "Unsaved changes" : ""; }
+  function money(n) { return "$" + Number(n).toLocaleString("en-US"); }
+  function worthOf(m, name) { var w = m.worth[name]; return typeof w === "number" ? w : 0; }
+  function autoSell(price) { var d = Math.floor(price * RATIO); if (d < 1 && price >= 3) d = 1; return d; }
+
+  function load() {
+    fetch("/admin/prices/data", { credentials: "same-origin", cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error("load failed"); return r.json(); })
+      .then(function (d) {
+        data = d;
+        var keys = Object.keys(data).filter(function (k) { return data[k] && typeof data[k] === "object" && data[k].worth; });
+        if (!keys.length) { data.oneblock = { worth: {}, categories: {} }; keys = ["oneblock"]; }
+        if (keys.indexOf(mode) < 0) mode = keys[0];
+        render();
+      })
+      .catch(function () { root.textContent = "Could not load prices. Reload the page."; });
+  }
+
+  function save() {
+    var btn = document.getElementById("pe-save");
+    btn.disabled = true;
+    fetch("/admin/prices/save", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF": csrf },
+      body: JSON.stringify(data)
+    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        btn.disabled = false;
+        flash = { ok: res.ok, text: res.j.msg || (res.ok ? "Saved." : "Could not save.") };
+        if (res.ok) { data = res.j.data || data; setDirty(false); }
+        render();
+      })
+      .catch(function () { btn.disabled = false; flash = { ok: false, text: "Could not reach the server." }; render(); });
+  }
+
+  function render() {
+    root.textContent = "";
+    var m = data[mode];
+
+    var top = el("div", "pe-top");
+    var modes = Object.keys(data).filter(function (k) { return data[k] && typeof data[k] === "object" && data[k].worth; });
+    if (modes.length > 1) {
+      var sel = el("select");
+      modes.forEach(function (k) { var o = el("option", null, k); o.value = k; if (k === mode) o.selected = true; sel.appendChild(o); });
+      sel.onchange = function () { mode = sel.value; tab = "worth"; render(); };
+      top.appendChild(sel);
+    }
+    var st = el("span", "pe-state", ""); st.id = "pe-state"; top.appendChild(st);
+    var sb = el("button", "btn", "Save changes"); sb.id = "pe-save"; sb.type = "button"; sb.onclick = save; top.appendChild(sb);
+    root.appendChild(top);
+    var msg = el("div", "msg " + (flash && !flash.ok ? "err" : "ok")); msg.id = "pe-msg"; msg.setAttribute("role", "status");
+    if (flash) msg.textContent = flash.text; else msg.hidden = true;
+    root.appendChild(msg);
+    setDirty(dirty);
+
+    var tabs = el("div", "pe-tabs");
+    function addTab(id, label) {
+      var b = el("button", "pe-tab", label); b.type = "button";
+      if (id === tab) b.setAttribute("aria-current", "true");
+      b.onclick = function () { tab = id; filter = ""; render(); };
+      tabs.appendChild(b);
+    }
+    addTab("worth", "Sell worth");
+    Object.keys(m.categories).forEach(function (id) { addTab("cat:" + id, plain(m.categories[id].name || id)); });
+    addTab("new", "+ Category");
+    root.appendChild(tabs);
+
+    if (tab === "new") return renderNew(m);
+    if (tab === "worth") return renderTable(m, m.worth, null);
+    var cid = tab.slice(4);
+    if (!m.categories[cid]) { tab = "worth"; return render(); }
+    renderCat(m, cid);
+  }
+
+  function renderNew(m) {
+    var p = el("div", "panel");
+    p.appendChild(el("p", "note", "Categories show up in /shop in this order. The shop menu fits 7."));
+    var id = el("input"); id.placeholder = "id (letters, numbers, _)"; id.maxLength = 24;
+    var nm = el("input"); nm.placeholder = "Name, colour codes allowed: &6&lTools"; nm.maxLength = 60;
+    var ic = el("input"); ic.placeholder = "Icon material, e.g. DIAMOND_PICKAXE"; ic.maxLength = 64;
+    var b = el("button", "btn", "Add category"); b.type = "button";
+    b.onclick = function () {
+      var k = id.value.trim().toLowerCase();
+      if (!/^[a-z0-9_]{1,24}$/.test(k) || m.categories[k]) return alert("Pick a new id with letters, numbers or _.");
+      if (Object.keys(m.categories).length >= 7) return alert("The shop menu only fits 7 categories.");
+      m.categories[k] = { name: nm.value.trim() || k, icon: (ic.value.trim() || "CHEST").toUpperCase(), items: {} };
+      tab = "cat:" + k; setDirty(true); render();
+    };
+    [id, nm, ic].forEach(function (x) { p.appendChild(x); });
+    p.appendChild(b);
+    root.appendChild(p);
+  }
+
+  function renderCat(m, cid) {
+    var c = m.categories[cid];
+    var head = el("div", "panel pe-cat");
+    var nm = el("input"); nm.value = c.name; nm.maxLength = 60; nm.setAttribute("aria-label", "Category name");
+    nm.oninput = function () { c.name = nm.value; setDirty(true); };
+    var ic = el("input"); ic.value = c.icon; ic.maxLength = 64; ic.setAttribute("aria-label", "Icon material");
+    ic.oninput = function () { c.icon = ic.value.trim().toUpperCase(); setDirty(true); };
+    var del = el("button", "btn ghost sm danger", "Delete category"); del.type = "button";
+    del.onclick = function () { if (confirm("Delete this category and all its items?")) { delete m.categories[cid]; tab = "worth"; setDirty(true); render(); } };
+    head.appendChild(nm); head.appendChild(ic); head.appendChild(del);
+    root.appendChild(head);
+    renderTable(m, c.items, m);
+  }
+
+  // items: name -> number. shopOf is set for shop categories (adds sell value + warnings).
+  function renderTable(m, items, shopOf) {
+    var bar = el("div", "pe-bar");
+    var f = el("input"); f.type = "search"; f.placeholder = "Filter items"; f.value = filter; f.setAttribute("aria-label", "Filter items");
+    bar.appendChild(f);
+    var count = el("span", "pe-count"); bar.appendChild(count);
+    root.appendChild(bar);
+
+    var list = el("div", "pe-list"); root.appendChild(list);
+    function rows() {
+      list.textContent = "";
+      var names = Object.keys(items).sort();
+      var shown = 0;
+      names.forEach(function (name) {
+        if (filter && name.toLowerCase().indexOf(filter) < 0) return;
+        shown++;
+        if (shown > 300) return;
+        var r = el("div", "pe-row");
+        r.appendChild(el("span", "pe-name", name));
+        var inp = el("input"); inp.type = "number"; inp.min = shopOf ? "1" : "0"; inp.step = shopOf ? "1" : "0.01"; inp.value = items[name];
+        inp.setAttribute("aria-label", "Price for " + name);
+        var note = el("span", "pe-note");
+        function upd() {
+          var v = parseFloat(inp.value);
+          if (!isFinite(v)) { note.textContent = ""; return; }
+          if (shopOf) {
+            var w = worthOf(m, name), min = Math.ceil(w * MARKUP);
+            if (w > 0 && v < min) { note.textContent = "Too low: the plugin raises it to " + money(min); note.className = "pe-note warn"; }
+            else { note.className = "pe-note"; note.textContent = "Sells for " + money(w > 0 ? w : autoSell(v)) + (w > 0 ? "" : " (auto)"); }
+          } else { note.className = "pe-note"; note.textContent = ""; }
+        }
+        inp.oninput = function () { var v = parseFloat(inp.value); if (isFinite(v) && v >= 0) { items[name] = shopOf ? Math.round(v) : v; setDirty(true); } upd(); };
+        upd();
+        var d = el("button", "btn ghost sm danger", "Remove"); d.type = "button";
+        d.onclick = function () { delete items[name]; setDirty(true); rows(); };
+        r.appendChild(inp); r.appendChild(note); r.appendChild(d);
+        list.appendChild(r);
+      });
+      count.textContent = shown + (shown > 300 ? " matches (showing 300, use the filter)" : " items");
+    }
+    f.oninput = function () { filter = f.value.trim().toLowerCase(); rows(); };
+    rows();
+
+    var add = el("div", "pe-add");
+    var an = el("input"); an.placeholder = "ITEM_NAME (Bukkit material, e.g. DIAMOND_BLOCK)"; an.maxLength = 64;
+    var ap = el("input"); ap.type = "number"; ap.placeholder = "Price"; ap.min = "0"; ap.step = shopOf ? "1" : "0.01";
+    var ab = el("button", "btn sm", "Add item"); ab.type = "button";
+    ab.onclick = function () {
+      var n = an.value.trim().toUpperCase().replace(/\s+/g, "_"), v = parseFloat(ap.value);
+      if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(n)) return alert("Use the item name, like DIAMOND_BLOCK.");
+      if (!isFinite(v) || v < (shopOf ? 1 : 0)) return alert("Enter a price.");
+      items[n] = shopOf ? Math.round(v) : v; an.value = ""; ap.value = ""; setDirty(true); rows();
+    };
+    add.appendChild(an); add.appendChild(ap); add.appendChild(ab);
+    root.appendChild(add);
+  }
+
+  window.addEventListener("beforeunload", function (e) { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+  load();
+})();
+"""
+
+PRICES_CSS = """<style>
+.pe-top{display:flex;gap:var(--s3);align-items:center;justify-content:flex-end;margin-block:var(--s4);flex-wrap:wrap}
+.pe-state{color:var(--warn);font-size:.95rem;margin-right:auto}
+.pe-tabs{display:flex;gap:var(--s2);flex-wrap:wrap;border-bottom:1px solid var(--line);margin-bottom:var(--s4)}
+.pe-tab{background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);font:600 .95rem var(--body);padding:var(--s2) var(--s3);cursor:pointer}
+.pe-tab:hover{color:var(--text)}.pe-tab[aria-current]{color:var(--text);border-bottom-color:var(--violet)}
+.pe-bar{display:flex;gap:var(--s3);align-items:center;margin-bottom:var(--s3)}.pe-bar input{max-width:22rem}
+.pe-count{color:var(--muted);font-size:.9rem}
+.pe-row{display:grid;grid-template-columns:minmax(10rem,1.3fr) 8rem 1fr auto;gap:var(--s3);align-items:center;padding:var(--s2) 0;border-bottom:1px solid var(--line)}
+.pe-name{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.9rem;overflow-wrap:anywhere}
+.pe-note{color:var(--muted);font-size:.9rem}.pe-note.warn{color:var(--warn)}
+.pe-add,.pe-cat{display:flex;gap:var(--s3);flex-wrap:wrap;align-items:center;margin-top:var(--s4)}
+.pe-cat{margin-top:0;margin-bottom:var(--s4)}.pe-add input,.pe-cat input{flex:1 1 12rem}
+@media(max-width:640px){.pe-row{grid-template-columns:1fr 6rem auto}.pe-note{grid-column:1/-1;order:5}}
+</style>"""
+
+
+def prices_page(csrf):
+    body = (
+        '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "prices") +
+        '<main id="top"><div class="wrap"><div class="ops-top"><div><h1>Game prices</h1>'
+        '<p>Sell worth is what <code>/sell</code> pays. Shop prices are what <code>/shop</code> charges. The Minecraft server downloads this every few minutes '
+        '(or run <code>/mobzone prices</code> in game). Shop prices are always raised to at least 3&times; the sell worth, and items without a worth sell for 25% of their shop price.</p></div></div>'
+        f'<div id="pe" data-csrf="{csrf}"><p class="note">Loading&hellip;</p></div>'
+        '<script src="/admin/prices.js" defer></script></div></main></body></html>'
+    )
+    return HEAD.format(title="Prices", css=CSS, meta='<meta name="robots" content="noindex,nofollow">' + PRICES_CSS) + body
 
 
 def media_page(csrf, msg="", kind="ok"):
@@ -1196,6 +1485,36 @@ class Handler(BaseHTTPRequestHandler):
                          args=(f"New message from {name or 'someone'} ({reply}):\n{msg[:400]}",)).start()
         return self.redirect("/?sent=1#contact")
 
+    def prices_save_req(self):
+        def reply(code, ok, msg, data=None):
+            body = {"ok": ok, "msg": msg}
+            if data is not None:
+                body["data"] = data
+            return self.send(code, json.dumps(body), "application/json", private=True)
+        tok = self.session()
+        if not tok:
+            return reply(401, False, "Your session ended. Log in again.")
+        if not same(self.headers.get("X-CSRF", ""), csrf_for(tok)):
+            return reply(403, False, "Bad request token. Reload the page.")
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 2000000:
+            return reply(413, False, "That file is too big.")
+        try:
+            doc = json.loads(self.rfile.read(n).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return reply(400, False, "That is not valid JSON.")
+        clean, err = prices_clean(doc)
+        if err:
+            return reply(400, False, err)
+        try:
+            prices_save(clean)
+        except OSError:
+            return reply(500, False, "Could not write the prices file on the server.")
+        return reply(200, True, "Saved. The game server picks it up within a few minutes, or run /mobzone prices.", clean)
+
     def media_upload(self):
         tok = self.session()
         if not tok:
@@ -1275,9 +1594,29 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/admin/inbox":
                 return self.send(200, inbox_page(csrf_for(tok)), private=True)
             with _msglock:
-                dump = {"exported": int(time.time()), "settings": load(), "messages": list(MSGS)}
+                dump = {"exported": int(time.time()), "settings": load(), "messages": list(MSGS), "prices": dict(PRICES)}
             return self.send(200, json.dumps(dump, indent=2), "application/json",
                              extra=[("Content-Disposition", 'attachment; filename="void-labs-backup.json"')], private=True)
+        if path == "/prices.json":
+            key = (self.headers.get("Authorization") or "")[7:] if (self.headers.get("Authorization") or "").startswith("Bearer ") else (parse_qs(urlparse(self.path).query).get("key", [""])[0])
+            if PRICES_KEY and not same(key, PRICES_KEY):
+                return self.send(403, "Forbidden", "text/plain", private=True)
+            with _pricelock:
+                dump = json.dumps(PRICES)
+            return self.send(200, dump, "application/json", private=True)
+        if path in ("/admin/prices", "/admin/prices.js", "/admin/prices/data"):
+            if not ADMIN_ON:
+                return self.send(503, NOT_ENABLED, private=True)
+            tok = self.session()
+            if not tok:
+                return self.send(200, admin_login_page(), private=True)
+            if path == "/admin/prices":
+                return self.send(200, prices_page(csrf_for(tok)), private=True)
+            if path == "/admin/prices.js":
+                return self.send(200, PRICES_JS, "text/javascript; charset=utf-8", private=True)
+            with _pricelock:
+                dump = json.dumps(PRICES)
+            return self.send(200, dump, "application/json", private=True)
         if path == "/admin/ops":
             if not ADMIN_ON:
                 return self.send(503, NOT_ENABLED, private=True)
@@ -1300,6 +1639,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, "Not found", "text/plain")
         if path == "/admin/media/upload":
             return self.media_upload()
+        if path == "/admin/prices/save":
+            return self.prices_save_req()
         form = self.form()
         if form is None:
             return self.send(413, "Too large", "text/plain")
@@ -1398,6 +1739,7 @@ if __name__ == "__main__":
         print("NOTE: SESSION_SECRET missing or under 16 chars. Using a random key; logins reset on restart.", flush=True)
     msgs_load()
     upd_load()
+    prices_load()
     if MONITOR_INTERVAL > 0:
         threading.Thread(target=monitor_loop, daemon=True).start()
     else:
