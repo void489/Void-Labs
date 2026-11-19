@@ -1201,7 +1201,7 @@ PRICES_JS = r"""(function () {
     renderTable(m, c.items, m);
   }
 
-  // items: name -> number. shopOf is set for shop categories (adds sell value + warnings).
+  // items: name -> number. shopOf is set for shop categories: rows then have a Buy price and a Sell price.
   function renderTable(m, items, shopOf) {
     var bar = el("div", "pe-bar");
     var f = el("input"); f.type = "search"; f.placeholder = "Filter items"; f.value = filter; f.setAttribute("aria-label", "Filter items");
@@ -1212,31 +1212,48 @@ PRICES_JS = r"""(function () {
     var list = el("div", "pe-list"); root.appendChild(list);
     function rows() {
       list.textContent = "";
+      if (shopOf) {
+        var hd = el("div", "pe-row pe-shop pe-head");
+        ["Item", "Buy price", "Sell price", "", ""].forEach(function (t) { hd.appendChild(el("span", null, t)); });
+        list.appendChild(hd);
+      }
       var names = Object.keys(items).sort();
       var shown = 0;
       names.forEach(function (name) {
         if (filter && name.toLowerCase().indexOf(filter) < 0) return;
         shown++;
         if (shown > 300) return;
-        var r = el("div", "pe-row");
+        var r = el("div", shopOf ? "pe-row pe-shop" : "pe-row");
         r.appendChild(el("span", "pe-name", name));
         var inp = el("input"); inp.type = "number"; inp.min = shopOf ? "1" : "0"; inp.step = shopOf ? "1" : "0.01"; inp.value = items[name];
-        inp.setAttribute("aria-label", "Price for " + name);
-        var note = el("span", "pe-note");
+        inp.setAttribute("aria-label", (shopOf ? "Buy price for " : "Sell worth for ") + name);
+        r.appendChild(inp);
+        var sell = null, note = el("span", "pe-note");
+        if (shopOf) {
+          sell = el("input"); sell.type = "number"; sell.min = "0"; sell.step = "0.01"; sell.placeholder = "auto";
+          sell.setAttribute("aria-label", "Sell price for " + name);
+          var w0 = m.worth[name]; sell.value = typeof w0 === "number" ? w0 : "";
+          r.appendChild(sell);
+        }
         function upd() {
-          var v = parseFloat(inp.value);
-          if (!isFinite(v)) { note.textContent = ""; return; }
-          if (shopOf) {
-            var w = worthOf(m, name), min = Math.ceil(w * MARKUP);
-            if (w > 0 && v < min) { note.textContent = "Too low: the plugin raises it to " + money(min); note.className = "pe-note warn"; }
-            else { note.className = "pe-note"; note.textContent = "Sells for " + money(w > 0 ? w : autoSell(v)) + (w > 0 ? "" : " (auto)"); }
-          } else { note.className = "pe-note"; note.textContent = ""; }
+          if (!shopOf) { note.textContent = ""; return; }
+          var buy = parseFloat(inp.value);
+          if (!isFinite(buy)) { note.textContent = ""; return; }
+          var w = worthOf(m, name), min = Math.ceil(w * MARKUP);
+          if (w > 0 && buy < min) { note.textContent = "Buy must be at least " + MARKUP + "x sell: the plugin raises it to " + money(min); note.className = "pe-note warn"; }
+          else { note.className = "pe-note"; note.textContent = w > 0 ? "" : "Sell is auto: " + money(autoSell(buy)); }
         }
         inp.oninput = function () { var v = parseFloat(inp.value); if (isFinite(v) && v >= 0) { items[name] = shopOf ? Math.round(v) : v; setDirty(true); } upd(); };
+        if (sell) sell.oninput = function () {
+          var t = sell.value.trim();
+          if (t === "") delete m.worth[name];
+          else { var v = parseFloat(t); if (isFinite(v) && v >= 0) m.worth[name] = v; }
+          setDirty(true); upd();
+        };
         upd();
         var d = el("button", "btn ghost sm danger", "Remove"); d.type = "button";
         d.onclick = function () { delete items[name]; setDirty(true); rows(); };
-        r.appendChild(inp); r.appendChild(note); r.appendChild(d);
+        r.appendChild(note); r.appendChild(d);
         list.appendChild(r);
       });
       count.textContent = shown + (shown > 300 ? " matches (showing 300, use the filter)" : " items");
@@ -1246,15 +1263,19 @@ PRICES_JS = r"""(function () {
 
     var add = el("div", "pe-add");
     var an = el("input"); an.placeholder = "ITEM_NAME (Bukkit material, e.g. DIAMOND_BLOCK)"; an.maxLength = 64;
-    var ap = el("input"); ap.type = "number"; ap.placeholder = "Price"; ap.min = "0"; ap.step = shopOf ? "1" : "0.01";
+    var ap = el("input"); ap.type = "number"; ap.placeholder = shopOf ? "Buy price" : "Price"; ap.min = "0"; ap.step = shopOf ? "1" : "0.01";
+    var asl = null;
+    if (shopOf) { asl = el("input"); asl.type = "number"; asl.placeholder = "Sell price (blank = auto)"; asl.min = "0"; asl.step = "0.01"; }
     var ab = el("button", "btn sm", "Add item"); ab.type = "button";
     ab.onclick = function () {
       var n = an.value.trim().toUpperCase().replace(/\s+/g, "_"), v = parseFloat(ap.value);
       if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(n)) return alert("Use the item name, like DIAMOND_BLOCK.");
       if (!isFinite(v) || v < (shopOf ? 1 : 0)) return alert("Enter a price.");
-      items[n] = shopOf ? Math.round(v) : v; an.value = ""; ap.value = ""; setDirty(true); rows();
+      items[n] = shopOf ? Math.round(v) : v;
+      if (asl && asl.value.trim() !== "") { var sv = parseFloat(asl.value); if (isFinite(sv) && sv >= 0) m.worth[n] = sv; }
+      an.value = ""; ap.value = ""; if (asl) asl.value = ""; setDirty(true); rows();
     };
-    add.appendChild(an); add.appendChild(ap); add.appendChild(ab);
+    add.appendChild(an); add.appendChild(ap); if (asl) add.appendChild(asl); add.appendChild(ab);
     root.appendChild(add);
   }
 
@@ -1271,12 +1292,14 @@ PRICES_CSS = """<style>
 .pe-tab:hover{color:var(--text)}.pe-tab[aria-current]{color:var(--text);border-bottom-color:var(--violet)}
 .pe-bar{display:flex;gap:var(--s3);align-items:center;margin-bottom:var(--s3)}.pe-bar input{max-width:22rem}
 .pe-count{color:var(--muted);font-size:.9rem}
+.pe-shop{grid-template-columns:minmax(10rem,1.3fr) 7rem 7rem 1fr auto!important}
+.pe-head{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;padding-bottom:var(--s1)}
 .pe-row{display:grid;grid-template-columns:minmax(10rem,1.3fr) 8rem 1fr auto;gap:var(--s3);align-items:center;padding:var(--s2) 0;border-bottom:1px solid var(--line)}
 .pe-name{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.9rem;overflow-wrap:anywhere}
 .pe-note{color:var(--muted);font-size:.9rem}.pe-note.warn{color:var(--warn)}
 .pe-add,.pe-cat{display:flex;gap:var(--s3);flex-wrap:wrap;align-items:center;margin-top:var(--s4)}
 .pe-cat{margin-top:0;margin-bottom:var(--s4)}.pe-add input,.pe-cat input{flex:1 1 12rem}
-@media(max-width:640px){.pe-row{grid-template-columns:1fr 6rem auto}.pe-note{grid-column:1/-1;order:5}}
+@media(max-width:640px){.pe-row{grid-template-columns:1fr 6rem auto}.pe-shop{grid-template-columns:1fr 5rem 5rem auto!important}.pe-head span:nth-child(n+4){display:none}.pe-note{grid-column:1/-1;order:5}}
 </style>"""
 
 
@@ -1284,8 +1307,8 @@ def prices_page(csrf):
     body = (
         '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "prices") +
         '<main id="top"><div class="wrap"><div class="ops-top"><div><h1>Game prices</h1>'
-        '<p>Sell worth is what <code>/sell</code> pays. Shop prices are what <code>/shop</code> charges. The Minecraft server downloads this every few minutes '
-        '(or run <code>/mobzone prices</code> in game). Shop prices are always raised to at least 3&times; the sell worth, and items without a worth sell for 25% of their shop price.</p></div></div>'
+        '<p>On each shop tab, <strong>Buy price</strong> is what <code>/shop</code> charges and <strong>Sell price</strong> is what <code>/sell</code> pays (leave it blank for auto). The Sell worth tab is for items that are not in the shop. The Minecraft server downloads this every few minutes '
+        '(or run <code>/mobzone prices</code> in game). A buy price is always raised to at least 3&times; the sell price, and a blank sell price pays 25% of the buy price.</p></div></div>'
         f'<div id="pe" data-csrf="{csrf}"><p class="note">Loading&hellip;</p></div>'
         '<script src="/admin/prices.js" defer></script></div></main></body></html>'
     )
