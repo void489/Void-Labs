@@ -122,17 +122,22 @@ def _sig(msg):
     return hmac.new(SECRET, msg.encode(), hashlib.sha256).hexdigest()
 
 
-def make_session():
+def make_session(user="*"):
     exp = str(int(time.time()) + SESSION_TTL)
-    return exp + "." + _sig("s" + exp)
+    return user + "~" + exp + "." + _sig("s" + user + "~" + exp)
 
 
 def check_session(token):
+    """Returns the username ("*" = owner) for a valid token, else None."""
     try:
-        exp, sig = token.split(".", 1)
-        return int(exp) > time.time() and hmac.compare_digest(sig, _sig("s" + exp))
+        head, sig = token.split(".", 1)
+        user, exp = head.split("~", 1)
+        if int(exp) > time.time() and hmac.compare_digest(sig, _sig("s" + head)):
+            if user == "*" or user in USERS:
+                return user
     except (ValueError, AttributeError):
-        return False
+        pass
+    return None
 
 
 def csrf_for(token):
@@ -141,6 +146,77 @@ def csrf_for(token):
 
 def same(a, b):
     return hmac.compare_digest(a.encode(), b.encode())
+
+
+# ---------- admin users (owner = ADMIN_USERNAME / ADMIN_PASSWORD, everyone else is limited to chosen tabs) ----------
+USERS_FILE = os.getenv("USERS_FILE") or os.path.join(BASE, "users.json")
+_userlock = threading.RLock()
+USERS = {}  # name -> {"salt","hash","tabs":[...]}
+ADMIN_TABS = [("settings", "Settings"), ("monitor", "Monitor"), ("inbox", "Inbox"), ("updates", "Updates"),
+              ("prices", "Prices"), ("media", "Media")]
+TAB_KEYS = {k for k, _ in ADMIN_TABS}
+TAB_HREF = {"settings": "/admin", "monitor": "/admin/ops", "inbox": "/admin/inbox", "updates": "/admin/updates",
+            "prices": "/admin/prices", "media": "/admin/media"}
+USER_RE = re.compile(r"^[a-z0-9_-]{3,24}$")
+_ctx = threading.local()
+
+
+def user_hash(pw, salt):
+    return hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salt), 200000).hex()
+
+
+def users_load():
+    try:
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            USERS.clear()
+            for k, v in d.items():
+                if USER_RE.match(k) and isinstance(v, dict) and "salt" in v and "hash" in v:
+                    USERS[k] = {"salt": str(v["salt"]), "hash": str(v["hash"]),
+                                "tabs": [t for t in v.get("tabs", []) if t in TAB_KEYS]}
+    except (OSError, ValueError):
+        pass
+
+
+def users_save():
+    tmp = USERS_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(USERS, f)
+        os.replace(tmp, USERS_FILE)
+    except OSError:
+        pass
+
+
+def is_owner():
+    return getattr(_ctx, "user", None) == "*"
+
+
+def can(tab):
+    u = getattr(_ctx, "user", None)
+    if u == "*":
+        return True
+    return bool(u and u in USERS and tab in USERS[u]["tabs"])
+
+
+def tab_of(path):
+    """Which tab a /admin path belongs to. "owner" = owner only, None = no tab needed."""
+    if path in ("/admin/login", "/admin/logout"):
+        return None
+    if path == "/admin" or path == "/admin/save":
+        return "settings"
+    if path.startswith("/admin/ops"):
+        return "monitor"
+    for p, t in (("/admin/inbox", "inbox"), ("/admin/updates", "updates"), ("/admin/prices", "prices"), ("/admin/media", "media")):
+        if path.startswith(p):
+            return t
+    return "owner"  # /admin/users*, /admin/backup, anything unknown
+
+
+def allowed(path):
+    t = tab_of(path)
+    return t is None or (is_owner() if t == "owner" else can(t))
 
 
 # ---------- updates log ----------
@@ -907,12 +983,18 @@ def admin_login_page(msg=""):
 
 
 def admin_head(csrf, active):
-    unread = unread_count()
+    unread = unread_count() if can("inbox") else 0
     badge = f'<span class="badge" aria-label="{unread} unread">{unread}</span>' if unread else ""
-    cur = lambda n: ' aria-current="page"' if active == n else ""
+    links = ""
+    for k, label in ADMIN_TABS:
+        if can(k):
+            cur = ' aria-current="page"' if active == k else ""
+            links += f'<a href="{TAB_HREF[k]}"{cur}>{label}{badge if k == "inbox" else ""}</a>'
+    if is_owner():
+        links += f'<a href="/admin/users"{' aria-current="page"' if active == "users" else ""}>Users</a>'
     return (
         f'<header class="site-head adm"><div class="wrap"><a class="mark" href="/">{LOGO}View site</a>'
-        f'<nav class="admin-nav" aria-label="Admin"><a href="/admin"{cur("settings")}>Settings</a><a href="/admin/ops"{cur("monitor")}>Monitor</a><a href="/admin/inbox"{cur("inbox")}>Inbox{badge}</a><a href="/admin/updates"{cur("updates")}>Updates</a><a href="/admin/prices"{cur("prices")}>Prices</a><a href="/admin/media"{cur("media")}>Media</a></nav>'
+        f'<nav class="admin-nav" aria-label="Admin">{links}</nav>'
         f'<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{csrf}">'
         '<button class="btn ghost sm" type="submit">Log out</button></form></div></header>'
     )
@@ -930,7 +1012,7 @@ def admin_page(s, csrf, msg="", kind="ok"):
         '<body><a class="skip" href="#top">Skip to content</a>'
         + admin_head(csrf, "settings") +
         '<main id="top"><div class="wrap admin-grid">'
-        f'<aside class="admin-side"><h1>Site settings</h1><p>Edits appear on the public site as soon as you save.</p><ul aria-label="Current status">{live}</ul><a class="btn ghost sm" href="/admin/backup">Download backup</a></aside>'
+        f'<aside class="admin-side"><h1>Site settings</h1><p>Edits appear on the public site as soon as you save.</p><ul aria-label="Current status">{live}</ul>{'<a class="btn ghost sm" href="/admin/backup">Download backup</a>' if is_owner() else ''}</aside>'
         f'<div>{m}<form method="post" action="/admin/save"><input type="hidden" name="csrf" value="{csrf}">'
         '<fieldset><legend>Product status</legend><div class="row"><div><label for="ds">Donut status</label>'
         f'<select id="ds" name="donut_status">{opts(s["donut_status"])}</select></div>'
@@ -1077,6 +1159,39 @@ def updates_admin_page(csrf, msg=""):
         f'<div class="ops-sec"><h2>Published</h2>{published}</div></div></main></body></html>'
     )
     return HEAD.format(title="Updates", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
+
+
+def users_page(csrf, msg="", kind="ok"):
+    def boxes(sel, pre):
+        return "".join(
+            f'<label class="chk"><input type="checkbox" name="tab" value="{k}"{" checked" if k in sel else ""}> {v}</label>'
+            for k, v in ADMIN_TABS)
+    with _userlock:
+        items = sorted(USERS.items())
+    rows = ""
+    for name, u in items:
+        rows += (
+            f'<li class="panel"><h3>{E(name)}</h3><form method="post" action="/admin/users/update"><input type="hidden" name="csrf" value="{csrf}">'
+            f'<input type="hidden" name="name" value="{E(name)}"><fieldset style="margin:0"><legend>Tabs this user can open</legend>{boxes(u["tabs"], name)}</fieldset>'
+            f'<label for="pw-{E(name)}">New password <span class="hint">(leave blank to keep it)</span></label>'
+            f'<input id="pw-{E(name)}" name="password" type="password" minlength="10" autocomplete="new-password">'
+            '<div style="display:flex;gap:var(--s2);margin-top:var(--s3)"><button class="btn sm" type="submit">Save</button>'
+            f'<button class="btn ghost sm danger" type="submit" formaction="/admin/users/delete" formnovalidate onclick="return confirm(\'Delete this user?\')">Delete user</button></div></form></li>')
+    listing = f'<ul style="list-style:none;padding:0;display:grid;gap:var(--s4)">{rows}</ul>' if rows else '<p class="note">No extra admins yet.</p>'
+    m = f'<div class="msg {kind}" role="status">{E(msg)}</div>' if msg else ""
+    body = (
+        '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "users") +
+        '<main id="top"><div class="wrap"><div class="ops-top"><div><h1>Users</h1><p>Create admins who can open only the tabs you tick. They cannot see the other tabs, the backup, or this page. Your own login always has full access.</p></div></div>'
+        f'{m}<form method="post" action="/admin/users/add" class="panel"><input type="hidden" name="csrf" value="{csrf}">'
+        '<fieldset style="margin:0"><legend>New admin</legend><div class="row"><div><label for="nu" style="margin-top:0">Username</label>'
+        '<input id="nu" name="name" required minlength="3" maxlength="24" pattern="[a-zA-Z0-9_\\-]+" autocomplete="off" placeholder="mod_alex"></div>'
+        '<div><label for="np" style="margin-top:0">Password <span class="hint">(10+ characters)</span></label>'
+        '<input id="np" name="password" type="password" required minlength="10" autocomplete="new-password"></div></div>'
+        f'<fieldset style="margin-top:var(--s3)"><legend>Tabs</legend>{boxes([], "new")}</fieldset></fieldset>'
+        '<button class="btn" type="submit">Create admin</button></form>'
+        f'<div class="ops-sec"><h2>Admins</h2>{listing}</div></div></main></body></html>'
+    )
+    return HEAD.format(title="Users", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
 
 
 PRICES_JS = r"""(function () {
@@ -1292,6 +1407,7 @@ PRICES_CSS = """<style>
 .pe-tab:hover{color:var(--text)}.pe-tab[aria-current]{color:var(--text);border-bottom-color:var(--violet)}
 .pe-bar{display:flex;gap:var(--s3);align-items:center;margin-bottom:var(--s3)}.pe-bar input{max-width:22rem}
 .pe-count{color:var(--muted);font-size:.9rem}
+.chk{display:inline-flex;align-items:center;gap:.4rem;margin:.25rem 1rem .25rem 0;font-weight:500}.chk input{width:auto;margin:0}
 .pe-shop{grid-template-columns:minmax(10rem,1.3fr) 7rem 7rem 1fr auto!important}
 .pe-head{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;padding-bottom:var(--s1)}
 .pe-row{display:grid;grid-template-columns:minmax(10rem,1.3fr) 8rem 1fr auto;gap:var(--s3);align-items:center;padding:var(--s2) 0;border-bottom:1px solid var(--line)}
@@ -1459,11 +1575,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def session(self):
+        _ctx.user = None
         for part in (self.headers.get("Cookie") or "").split(";"):
             k, _, v = part.strip().partition("=")
-            if k == "vl_session" and check_session(v):
-                return v
+            if k == "vl_session":
+                u = check_session(v)
+                if u:
+                    _ctx.user = u
+                    return v
         return None
+
+    def no_access(self, tok):
+        # send people to the first tab they are allowed to use, or tell them they have none
+        for k, _ in ADMIN_TABS:
+            if can(k):
+                return self.redirect(TAB_HREF[k])
+        return self.send(403, "You don't have access to any admin tabs. Ask the owner.", "text/plain", private=True)
 
     def cookie(self, value, max_age):
         flags = f"vl_session={value}; Path=/admin; HttpOnly; SameSite=Strict; Max-Age={max_age}"
@@ -1592,6 +1719,14 @@ class Handler(BaseHTTPRequestHandler):
             if ext in SHOT_TYPES and name in {k + e for k in ("donut", "pixel") for e in SHOT_TYPES} and shot_file(name[:-len(ext)]) == name:
                 with open(os.path.join(SHOTS_DIR, name), "rb") as fh:
                     return self.send(200, fh.read(), SHOT_TYPES[ext], extra=[("Cache-Control", "public, max-age=300")])
+        if path.startswith("/admin") and ADMIN_ON:
+            tok = self.session()
+            if tok and not allowed(path):
+                if path == "/admin":
+                    return self.no_access(tok)
+                return self.send(403, "You don't have access to this tab.", "text/plain", private=True)
+            if tok and path == "/admin/users":
+                return self.send(200, users_page(csrf_for(tok)), private=True)
         if path == "/admin":
             if not ADMIN_ON:
                 return self.send(503, NOT_ENABLED, private=True)
@@ -1660,6 +1795,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.contact(form)
         if not path.startswith("/admin") or not ADMIN_ON:
             return self.send(404, "Not found", "text/plain")
+        if path not in ("/admin/login", "/admin/logout"):
+            _t = self.session()
+            if _t and not allowed(path):
+                if path == "/admin/prices/save":
+                    return self.send(403, json.dumps({"ok": False, "msg": "No access to Prices."}), "application/json", private=True)
+                return self.send(403, "You don't have access to this tab.", "text/plain", private=True)
         if path == "/admin/media/upload":
             return self.media_upload()
         if path == "/admin/prices/save":
@@ -1679,10 +1820,18 @@ class Handler(BaseHTTPRequestHandler):
             if until > now:
                 return self.send(429, admin_login_page("Too many attempts. Try again in a few minutes."), private=True)
             u, p = form.get("username", [""])[0], form.get("password", [""])[0]
-            ok_u, ok_p = same(u, ADMIN_USER), same(p, ADMIN_PASS)
-            if ok_u and ok_p:
+            who = None
+            if same(u, ADMIN_USER) and same(p, ADMIN_PASS):
+                who = "*"
+            else:
+                rec = USERS.get(u.strip().lower())
+                if rec and hmac.compare_digest(user_hash(p, rec["salt"]), rec["hash"]):
+                    who = u.strip().lower()
+                elif not rec:
+                    user_hash(p, "00" * 16)  # keep timing similar for unknown names
+            if who:
                 _fails.pop(ip, None)
-                return self.redirect("/admin", [self.cookie(make_session(), SESSION_TTL)])
+                return self.redirect("/admin", [self.cookie(make_session(who), SESSION_TTL)])
             count += 1
             _fails[ip] = (count, now + 300 if count >= 5 else 0)
             time.sleep(1)
@@ -1702,6 +1851,38 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, admin_page(clean, csrf_for(tok), err, "err"), private=True)
             save(clean)
             return self.send(200, admin_page(clean, csrf_for(tok), "Saved. Your changes are live.", "ok"), private=True)
+        if path in ("/admin/users/add", "/admin/users/update", "/admin/users/delete"):
+            name = form.get("name", [""])[0].strip().lower()
+            pw = form.get("password", [""])[0]
+            tabs = [t for t in form.get("tab", []) if t in TAB_KEYS]
+            page = lambda m, k="ok": self.send(200 if k == "ok" else 400, users_page(csrf_for(tok), m, k), private=True)
+            if path == "/admin/users/add":
+                if not USER_RE.match(name) or name == ADMIN_USER.lower():
+                    return page("Username must be 3 to 24 letters, numbers, - or _, and different from the owner.", "err")
+                if len(pw) < 10:
+                    return page("Password must be at least 10 characters.", "err")
+                with _userlock:
+                    if name in USERS or len(USERS) >= 50:
+                        return page("That username is taken, or there are too many users.", "err")
+                    salt = secrets.token_hex(16)
+                    USERS[name] = {"salt": salt, "hash": user_hash(pw, salt), "tabs": tabs}
+                    users_save()
+                return page(f"Created {name}." + ("" if tabs else " They have no tabs yet, so tick some and save."))
+            with _userlock:
+                if name not in USERS:
+                    return page("That user doesn't exist.", "err")
+                if path == "/admin/users/delete":
+                    del USERS[name]
+                    users_save()
+                    return page(f"Deleted {name}. They are logged out.")
+                if pw and len(pw) < 10:
+                    return page("Password must be at least 10 characters.", "err")
+                USERS[name]["tabs"] = tabs
+                if pw:
+                    salt = secrets.token_hex(16)
+                    USERS[name].update(salt=salt, hash=user_hash(pw, salt))
+                users_save()
+            return page(f"Saved {name}.")
         if path == "/admin/updates/add":
             title, text, tag = (form.get(k, [""])[0].replace("\r\n", "\n").strip() for k in ("title", "text", "tag"))
             if not title or len(title) > 80 or len(text) > 400 or tag not in UPD_TAGS:
@@ -1763,6 +1944,7 @@ if __name__ == "__main__":
     msgs_load()
     upd_load()
     prices_load()
+    users_load()
     if MONITOR_INTERVAL > 0:
         threading.Thread(target=monitor_loop, daemon=True).start()
     else:

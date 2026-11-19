@@ -31,3 +31,7 @@
 - **Starting values:** `prices.default.json` is used until the first save. Saved prices live in `prices.json` (or `PRICES_FILE`) and are included in Settings → Download backup.
 - **Rules the game plugin enforces:** a shop price is raised to at least 3x the item's sell worth; items with no worth sell for 25% of their shop price. The editor warns you when a price is too low.
 - Up to 7 shop categories (the in-game menu fits 7).
+
+## Extra admins (Users tab)
+
+The owner (`ADMIN_USERNAME` / `ADMIN_PASSWORD`) sees a **Users** tab. Create admins there and tick the tabs each may open (Settings, Monitor, Inbox, Updates, Prices, Media). They only see and can use those tabs. The backup and the Users page are owner-only. Users are stored in `users.json` (salted PBKDF2 hashes), or the path in `USERS_FILE`.
