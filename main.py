@@ -769,6 +769,8 @@ textarea{min-height:12rem;resize:vertical;line-height:1.55}
 .inc time{color:var(--muted)}
 .ops-sec{padding-bottom:var(--s8)}
 .ops-sec h2{font:700 1.5rem/1.1 var(--display);letter-spacing:-.02em;margin:var(--s7) 0 var(--s2);max-width:none}
+.skgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,16rem),1fr));gap:var(--s4)}.sk{min-width:0;overflow:hidden}.sk h3{margin:0 0 var(--s1);font:700 1.1rem/1.25 var(--display);letter-spacing:-.01em;overflow-wrap:anywhere}.sk .hint{margin:0 0 var(--s2);font-size:.78rem;overflow-wrap:anywhere}.sk input[type=file]{width:100%;max-width:100%;min-width:0;font-size:.8rem}.sk img{max-width:100%;height:auto}
+.chk{display:inline-flex;align-items:center;gap:.4rem;margin:.25rem 1rem .25rem 0;font-weight:500}.chk input{width:auto;margin:0}
 .note{color:var(--muted)}
 @media(max-width:62rem){
 .site-head.adm{height:auto}.site-head.adm .wrap{flex-wrap:wrap;padding-block:var(--s3)}.admin-nav{order:3;width:100%;overflow-x:auto;gap:var(--s5)}.upd li{grid-template-columns:1fr;gap:var(--s1)}.mgrid{grid-template-columns:1fr}
@@ -1407,7 +1409,6 @@ PRICES_CSS = """<style>
 .pe-tab:hover{color:var(--text)}.pe-tab[aria-current]{color:var(--text);border-bottom-color:var(--violet)}
 .pe-bar{display:flex;gap:var(--s3);align-items:center;margin-bottom:var(--s3)}.pe-bar input{max-width:22rem}
 .pe-count{color:var(--muted);font-size:.9rem}
-.chk{display:inline-flex;align-items:center;gap:.4rem;margin:.25rem 1rem .25rem 0;font-weight:500}.chk input{width:auto;margin:0}
 .pe-shop{grid-template-columns:minmax(10rem,1.3fr) 7rem 7rem 1fr auto!important}
 .pe-head{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;padding-bottom:var(--s1)}
 .pe-row{display:grid;grid-template-columns:minmax(10rem,1.3fr) 8rem 1fr auto;gap:var(--s3);align-items:center;padding:var(--s2) 0;border-bottom:1px solid var(--line)}
@@ -1474,12 +1475,12 @@ def skins_page(csrf, msg="", kind="ok"):
                if has else '<div class="none">No skin yet</div>')
         rm = (f'<form method="post" action="/admin/skins/remove" style="margin-top:var(--s2)"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="key" value="{key}">'
               '<button class="btn ghost sm danger" type="submit">Remove</button></form>') if has else ""
-        return (f'<div class="panel"><h3 style="margin:0 0 var(--s2)">{E(label)}</h3><p class="hint" style="margin:0 0 var(--s2)">{E(key)}</p>{pic}'
+        return (f'<div class="panel sk"><h3>{E(label)}</h3>{'' if key == label else '<p class="hint">' + E(key) + '</p>'}{pic}'
                 f'<form method="post" action="/admin/skins/upload" enctype="multipart/form-data" style="margin-top:var(--s3)">'
                 f'<input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="key" value="{key}">'
                 f'<input id="f-{key}" type="file" name="file" accept="image/png" required aria-label="Skin file for {E(label)}">'
                 f'<button class="btn sm" type="submit" style="margin-top:var(--s2)">{"Replace" if has else "Upload"}</button></form>{rm}</div>')
-    grid = lambda items: '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(14rem,1fr));gap:var(--s4)">' + "".join(card(k, l) for k, l in items) + "</div>"
+    grid = lambda items: '<div class="skgrid">' + "".join(card(k, l) for k, l in items) + "</div>"
     m = f'<div class="msg {kind}" role="{"alert" if kind == "err" else "status"}">{E(msg)}</div>' if msg else ""
     body = (
         '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "skins") +
