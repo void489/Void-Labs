@@ -302,6 +302,15 @@ def prices_load():
             with open(path, "r", encoding="utf-8") as f:
                 clean, err = prices_clean(json.load(f))
             if clean:
+                if "smp" not in clean and "oneblock" in clean:
+                    # first start with the SMP: it begins as a copy of the Oneblock prices, then you edit it in admin > Prices
+                    import copy
+                    clean["smp"] = copy.deepcopy(clean["oneblock"])
+                    try:
+                        prices_save(clean)
+                        return
+                    except OSError:
+                        pass
                 with _pricelock:
                     PRICES.clear()
                     PRICES.update(clean)
