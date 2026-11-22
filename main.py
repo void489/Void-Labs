@@ -1490,7 +1490,55 @@ def skins_page(csrf, msg="", kind="ok"):
     return HEAD.format(title="Zombie Skins", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
 
 
-def media_page(csrf, msg="", kind="ok"):
+# ---------- resource pack (players download it when they join: set resource-pack in server.properties) ----------
+PACK_STORE = os.getenv("PACK_DIR") or os.path.join(BASE, "pack-store")
+PACK_DEFAULT = os.path.join(BASE, "pack.default.zip")
+MAX_PACK = 10 * 1024 * 1024
+
+
+def pack_file():
+    p = os.path.join(PACK_STORE, "pack.zip")
+    return p if os.path.isfile(p) else (PACK_DEFAULT if os.path.isfile(PACK_DEFAULT) else None)
+
+
+def pack_info():
+    p = pack_file()
+    if not p:
+        return None
+    with open(p, "rb") as fh:
+        data = fh.read()
+    return {"sha1": hashlib.sha1(data).hexdigest(), "size": len(data), "custom": p != PACK_DEFAULT}
+
+
+def pack_ok(data):
+    import io, zipfile
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            names = z.namelist()
+            return "pack.mcmeta" in names and sum(i.file_size for i in z.infolist()) < 60 * 1024 * 1024
+    except (zipfile.BadZipFile, OSError):
+        return False
+
+
+def pack_card(csrf, base):
+    info = pack_info()
+    if not info:
+        return '<div class="panel"><h2>Resource pack</h2><p class="hint">No pack on the server.</p></div>'
+    url = (SITE_URL or base) + "/pack.zip"
+    reset = (f'<form method="post" action="/admin/media/packreset" style="margin-top:var(--s2)"><input type="hidden" name="csrf" value="{csrf}">'
+             '<button class="btn ghost sm danger" type="submit">Go back to the built-in pack</button></form>') if info["custom"] else ""
+    return (
+        '<div class="panel" style="grid-column:1/-1"><h2>Resource pack</h2>'
+        '<p class="hint">Custom Prison Blade and armor textures. Players download it when they join. Put these two lines in server.properties on the game server, then restart:</p>'
+        f'<pre style="white-space:pre-wrap;overflow-wrap:anywhere;margin:var(--s2) 0">resource-pack={E(url)}\nresource-pack-sha1={info["sha1"]}</pre>'
+        f'<p class="hint">{"Your uploaded pack" if info["custom"] else "Built-in pack"}, {info["size"] // 1024} KB. If you upload a new pack, the sha1 changes, so update that line too.</p>'
+        f'<form method="post" action="/admin/media/pack" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{csrf}">'
+        '<label for="f-pack" style="margin-top:0">Replace pack <span class="hint">(.zip with pack.mcmeta, up to 10 MB)</span></label>'
+        '<input id="f-pack" type="file" name="file" accept=".zip,application/zip" required>'
+        f'<button class="btn" type="submit" style="margin-top:var(--s3)">Upload pack</button></form>{reset}</div>')
+
+
+def media_page(csrf, msg="", kind="ok", base=""):
     cards = ""
     for key, name in (("donut", "Donut"), ("pixel", "Pixel")):
         u = shot_url(key)
@@ -1508,7 +1556,7 @@ def media_page(csrf, msg="", kind="ok"):
     body = (
         '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "media") +
         f'<main id="top"><div class="wrap"><div class="ops-top"><div><h1>Media</h1><p>The screenshots shown for Donut and Pixel. Without one, the site shows a simple mark instead.</p></div></div>{m}'
-        f'<div class="mgrid ops-sec">{cards}</div></div></main></body></html>'
+        f'<div class="mgrid ops-sec">{cards}{pack_card(csrf, base or getattr(_ctx, 'base', ''))}</div></div></main></body></html>'
     )
     return HEAD.format(title="Media", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
 
@@ -1635,6 +1683,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def session(self):
         _ctx.user = None
+        _ctx.base = self.base()
         for part in (self.headers.get("Cookie") or "").split(";"):
             k, _, v = part.strip().partition("=")
             if k == "vl_session":
@@ -1759,6 +1808,37 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(500, media_page(csrf_for(tok), "Could not save the file on the server.", "err"), private=True)
         return self.send(200, media_page(csrf_for(tok), f"{key.title()} screenshot updated."), private=True)
 
+    def base(self):
+        proto = "https" if (self.secure() or self.headers.get("X-Forwarded-Proto") == "https") else "http"
+        return proto + "://" + (self.headers.get("Host") or "localhost")
+
+    def pack_upload(self):
+        tok = self.session()
+        if not tok:
+            return self.redirect("/admin")
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        ctype = self.headers.get("Content-Type", "")
+        if n <= 0 or n > MAX_PACK + 20000 or not ctype.startswith("multipart/form-data"):
+            return self.send(413, media_page(csrf_for(tok), "That file is too big. The limit is 10 MB.", "err", self.base()), private=True)
+        fields, files = parse_multipart(ctype, self.rfile.read(n))
+        if not same(fields.get("csrf", ""), csrf_for(tok)):
+            return self.send(403, "Bad request token. Reload the page and try again.", "text/plain")
+        data = files.get("file", b"")
+        if not data or len(data) > MAX_PACK or not pack_ok(data):
+            return self.send(400, media_page(csrf_for(tok), "That is not a resource pack. It must be a .zip with pack.mcmeta at the top.", "err", self.base()), private=True)
+        try:
+            os.makedirs(PACK_STORE, exist_ok=True)
+            dest = os.path.join(PACK_STORE, "pack.zip")
+            with open(dest + ".tmp", "wb") as fh:
+                fh.write(data)
+            os.replace(dest + ".tmp", dest)
+        except OSError:
+            return self.send(500, media_page(csrf_for(tok), "Could not save the file on the server.", "err", self.base()), private=True)
+        return self.send(200, media_page(csrf_for(tok), "Pack updated. Copy the new sha1 into server.properties.", "ok", self.base()), private=True)
+
     def skin_upload(self):
         tok = self.session()
         if not tok:
@@ -1831,7 +1911,7 @@ class Handler(BaseHTTPRequestHandler):
             tok = self.session()
             if not tok:
                 return self.send(200, admin_login_page(), private=True)
-            return self.send(200, (updates_admin_page if path == "/admin/updates" else media_page)(csrf_for(tok)), private=True)
+            return self.send(200, (updates_admin_page(csrf_for(tok)) if path == "/admin/updates" else media_page(csrf_for(tok), base=self.base())), private=True)
         if path in ("/admin/inbox", "/admin/backup"):
             if not ADMIN_ON:
                 return self.send(503, NOT_ENABLED, private=True)
@@ -1850,6 +1930,12 @@ class Handler(BaseHTTPRequestHandler):
                 with open(p, "rb") as fh:
                     return self.send(200, fh.read(), "image/png", extra=[("Cache-Control", "public, max-age=300")])
             return self.send(404, NOT_FOUND)
+        if path == "/pack.zip":
+            p = pack_file()
+            if not p:
+                return self.send(404, NOT_FOUND)
+            with open(p, "rb") as fh:
+                return self.send(200, fh.read(), "application/zip", extra=[("Cache-Control", "public, max-age=60")])
         if path == "/skins.json":
             key = (self.headers.get("Authorization") or "")[7:] if (self.headers.get("Authorization") or "").startswith("Bearer ") else (parse_qs(urlparse(self.path).query).get("key", [""])[0])
             if PRICES_KEY and not same(key, PRICES_KEY):
@@ -1918,6 +2004,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.media_upload()
         if path == "/admin/skins/upload":
             return self.skin_upload()
+        if path == "/admin/media/pack":
+            return self.pack_upload()
         if path == "/admin/prices/save":
             return self.prices_save_req()
         form = self.form()
@@ -2022,6 +2110,12 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
             return self.send(200, skins_page(csrf_for(tok), f"Skin removed for {key}."), private=True)
+        if path == "/admin/media/packreset":
+            try:
+                os.remove(os.path.join(PACK_STORE, "pack.zip"))
+            except OSError:
+                pass
+            return self.send(200, media_page(csrf_for(tok), "Back to the built-in pack. Copy the new sha1 into server.properties.", "ok", self.base()), private=True)
         if path == "/admin/media/remove":
             key = form.get("key", [""])[0]
             if key not in ("donut", "pixel"):
