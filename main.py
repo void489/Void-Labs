@@ -153,10 +153,10 @@ USERS_FILE = os.getenv("USERS_FILE") or os.path.join(BASE, "users.json")
 _userlock = threading.RLock()
 USERS = {}  # name -> {"salt","hash","tabs":[...]}
 ADMIN_TABS = [("settings", "Settings"), ("monitor", "Monitor"), ("inbox", "Inbox"), ("updates", "Updates"),
-              ("prices", "Prices"), ("media", "Media")]
+              ("prices", "Prices"), ("skins", "Zombie Skins"), ("media", "Media")]
 TAB_KEYS = {k for k, _ in ADMIN_TABS}
 TAB_HREF = {"settings": "/admin", "monitor": "/admin/ops", "inbox": "/admin/inbox", "updates": "/admin/updates",
-            "prices": "/admin/prices", "media": "/admin/media"}
+            "prices": "/admin/prices", "skins": "/admin/skins", "media": "/admin/media"}
 USER_RE = re.compile(r"^[a-z0-9_-]{3,24}$")
 _ctx = threading.local()
 
@@ -208,7 +208,7 @@ def tab_of(path):
         return "settings"
     if path.startswith("/admin/ops"):
         return "monitor"
-    for p, t in (("/admin/inbox", "inbox"), ("/admin/updates", "updates"), ("/admin/prices", "prices"), ("/admin/media", "media")):
+    for p, t in (("/admin/inbox", "inbox"), ("/admin/updates", "updates"), ("/admin/prices", "prices"), ("/admin/skins", "skins"), ("/admin/media", "media")):
         if path.startswith(p):
             return t
     return "owner"  # /admin/users*, /admin/backup, anything unknown
@@ -1431,6 +1431,64 @@ def prices_page(csrf):
     return HEAD.format(title="Prices", css=CSS, meta='<meta name="robots" content="noindex,nofollow">' + PRICES_CSS) + body
 
 
+# ---------- zombie skins (read by the Minecraft plugin, uploaded in /admin/skins) ----------
+SKINS_STORE = os.getenv("SKINS_DIR") or os.path.join(BASE, "skins-store")
+SITE_URL = (os.getenv("SITE_URL") or "").rstrip("/")
+MAX_SKIN = 100 * 1024
+# (MythicMobs internal name, label) in the order they appear in the game
+SKIN_ZOMBIES = [("Walker", "Walker"), ("Runner", "Runner"), ("Brute", "Brute"), ("Cook", "Cook"), ("Stoker", "Stoker"),
+                ("Exploder", "Exploder"), ("Spitter", "Spitter"), ("Scientist", "Scientist"), ("Guard", "Guard"),
+                ("Crawler", "Crawler"), ("Mutant", "Mutant"), ("Hazmat", "Hazmat"), ("Elite", "Elite")]
+SKIN_BOSSES = [("BOSS_wardenzombie", "Warden Zombie"), ("BOSS_headchef", "Head Chef"), ("BOSS_foreman", "Foreman"),
+               ("BOSS_chiefsurgeon", "Chief Surgeon"), ("BOSS_brutus", "Warden Brutus"), ("BOSS_sludgeking", "Sludge King"),
+               ("BOSS_drmortem", "Dr. Mortem"), ("BOSS_specimen0", "Specimen Zero"), ("BOSS_patientzero", "Patient Zero")]
+SKIN_NAMES = {k for k, _ in SKIN_ZOMBIES + SKIN_BOSSES}
+
+
+def skin_path(name):
+    return os.path.join(SKINS_STORE, name + ".png") if name in SKIN_NAMES else None
+
+
+def skin_version(name):
+    p = skin_path(name)
+    try:
+        return int(os.path.getmtime(p)) if p else 0
+    except OSError:
+        return 0
+
+
+def skin_check(data):
+    """A Minecraft skin is a PNG that is 64x64 (or the old 64x32)."""
+    if len(data) < 33 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        return "That is not a PNG file."
+    w, h = int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    if w != 64 or h not in (32, 64):
+        return f"A skin must be 64x64 (or 64x32). That image is {w}x{h}."
+    return None
+
+
+def skins_page(csrf, msg="", kind="ok"):
+    def card(key, label):
+        has = skin_version(key)
+        pic = (f'<img src="/skins/{key}.png?v={has}" alt="{E(label)} skin" width="128" height="128" style="image-rendering:pixelated;background:var(--surface-2,#222);border-radius:8px">'
+               if has else '<div class="none">No skin yet</div>')
+        rm = (f'<form method="post" action="/admin/skins/remove" style="margin-top:var(--s2)"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="key" value="{key}">'
+              '<button class="btn ghost sm danger" type="submit">Remove</button></form>') if has else ""
+        return (f'<div class="panel"><h3 style="margin:0 0 var(--s2)">{E(label)}</h3><p class="hint" style="margin:0 0 var(--s2)">{E(key)}</p>{pic}'
+                f'<form method="post" action="/admin/skins/upload" enctype="multipart/form-data" style="margin-top:var(--s3)">'
+                f'<input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="key" value="{key}">'
+                f'<input id="f-{key}" type="file" name="file" accept="image/png" required aria-label="Skin file for {E(label)}">'
+                f'<button class="btn sm" type="submit" style="margin-top:var(--s2)">{"Replace" if has else "Upload"}</button></form>{rm}</div>')
+    grid = lambda items: '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(14rem,1fr));gap:var(--s4)">' + "".join(card(k, l) for k, l in items) + "</div>"
+    m = f'<div class="msg {kind}" role="{"alert" if kind == "err" else "status"}">{E(msg)}</div>' if msg else ""
+    body = (
+        '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "skins") +
+        '<main id="top"><div class="wrap"><div class="ops-top"><div><h1>Zombie Skins</h1><p>Upload a Minecraft skin (PNG, 64x64) for each zombie and boss. The game server downloads them and applies them to the zombies. A zombie without a skin keeps its normal look.</p></div></div>'
+        f'{m}<div class="ops-sec"><h2>Zombies</h2>{grid(SKIN_ZOMBIES)}</div><div class="ops-sec"><h2>Bosses</h2>{grid(SKIN_BOSSES)}</div></div></main></body></html>'
+    )
+    return HEAD.format(title="Zombie Skins", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
+
+
 def media_page(csrf, msg="", kind="ok"):
     cards = ""
     for key, name in (("donut", "Donut"), ("pixel", "Pixel")):
@@ -1700,6 +1758,36 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(500, media_page(csrf_for(tok), "Could not save the file on the server.", "err"), private=True)
         return self.send(200, media_page(csrf_for(tok), f"{key.title()} screenshot updated."), private=True)
 
+    def skin_upload(self):
+        tok = self.session()
+        if not tok:
+            return self.redirect("/admin")
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        ctype = self.headers.get("Content-Type", "")
+        if n <= 0 or n > MAX_SKIN + 20000 or not ctype.startswith("multipart/form-data"):
+            return self.send(413, skins_page(csrf_for(tok), "That file is too big. A skin is under 100 KB.", "err"), private=True)
+        fields, files = parse_multipart(ctype, self.rfile.read(n))
+        if not same(fields.get("csrf", ""), csrf_for(tok)):
+            return self.send(403, "Bad request token. Reload the page and try again.", "text/plain")
+        key, data = fields.get("key", ""), files.get("file", b"")
+        if key not in SKIN_NAMES or not data or len(data) > MAX_SKIN:
+            return self.send(400, skins_page(csrf_for(tok), "Choose a PNG skin under 100 KB.", "err"), private=True)
+        err = skin_check(data)
+        if err:
+            return self.send(400, skins_page(csrf_for(tok), err, "err"), private=True)
+        try:
+            os.makedirs(SKINS_STORE, exist_ok=True)
+            dest = skin_path(key)
+            with open(dest + ".tmp", "wb") as fh:
+                fh.write(data)
+            os.replace(dest + ".tmp", dest)
+        except OSError:
+            return self.send(500, skins_page(csrf_for(tok), "Could not save the file on the server.", "err"), private=True)
+        return self.send(200, skins_page(csrf_for(tok), f"Skin saved for {key}."), private=True)
+
     # routes
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
@@ -1755,6 +1843,30 @@ class Handler(BaseHTTPRequestHandler):
                 dump = {"exported": int(time.time()), "settings": load(), "messages": list(MSGS), "prices": dict(PRICES)}
             return self.send(200, json.dumps(dump, indent=2), "application/json",
                              extra=[("Content-Disposition", 'attachment; filename="void-labs-backup.json"')], private=True)
+        if path.startswith("/skins/") and path.endswith(".png"):
+            p = skin_path(path[7:-4])
+            if p and os.path.isfile(p):
+                with open(p, "rb") as fh:
+                    return self.send(200, fh.read(), "image/png", extra=[("Cache-Control", "public, max-age=300")])
+            return self.send(404, NOT_FOUND)
+        if path == "/skins.json":
+            key = (self.headers.get("Authorization") or "")[7:] if (self.headers.get("Authorization") or "").startswith("Bearer ") else (parse_qs(urlparse(self.path).query).get("key", [""])[0])
+            if PRICES_KEY and not same(key, PRICES_KEY):
+                return self.send(403, "Forbidden", "text/plain", private=True)
+            host = SITE_URL or (("https://" if self.secure() or self.headers.get("X-Forwarded-Proto") == "https" else "http://") + (self.headers.get("Host") or "localhost"))
+            out = {"version": 1, "updated": int(time.time()), "skins": {}}
+            for k in sorted(SKIN_NAMES):
+                v = skin_version(k)
+                if v:
+                    out["skins"][k] = f"{host}/skins/{k}.png?v={v}"
+            return self.send(200, json.dumps(out), "application/json", private=True)
+        if path == "/admin/skins":
+            if not ADMIN_ON:
+                return self.send(503, NOT_ENABLED, private=True)
+            tok = self.session()
+            if not tok:
+                return self.send(200, admin_login_page(), private=True)
+            return self.send(200, skins_page(csrf_for(tok)), private=True)
         if path == "/prices.json":
             key = (self.headers.get("Authorization") or "")[7:] if (self.headers.get("Authorization") or "").startswith("Bearer ") else (parse_qs(urlparse(self.path).query).get("key", [""])[0])
             if PRICES_KEY and not same(key, PRICES_KEY):
@@ -1803,6 +1915,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(403, "You don't have access to this tab.", "text/plain", private=True)
         if path == "/admin/media/upload":
             return self.media_upload()
+        if path == "/admin/skins/upload":
+            return self.skin_upload()
         if path == "/admin/prices/save":
             return self.prices_save_req()
         form = self.form()
@@ -1898,6 +2012,15 @@ class Handler(BaseHTTPRequestHandler):
                 UPDATES[:] = [u for u in UPDATES if u["id"] != ident]
             upd_save()
             return self.send(200, updates_admin_page(csrf_for(tok), "Deleted."), private=True)
+        if path == "/admin/skins/remove":
+            key = form.get("key", [""])[0]
+            if key not in SKIN_NAMES:
+                return self.send(400, "Bad request", "text/plain")
+            try:
+                os.remove(skin_path(key))
+            except OSError:
+                pass
+            return self.send(200, skins_page(csrf_for(tok), f"Skin removed for {key}."), private=True)
         if path == "/admin/media/remove":
             key = form.get("key", [""])[0]
             if key not in ("donut", "pixel"):
