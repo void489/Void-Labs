@@ -153,10 +153,10 @@ USERS_FILE = os.getenv("USERS_FILE") or os.path.join(BASE, "users.json")
 _userlock = threading.RLock()
 USERS = {}  # name -> {"salt","hash","tabs":[...]}
 ADMIN_TABS = [("settings", "Settings"), ("monitor", "Monitor"), ("inbox", "Inbox"), ("updates", "Updates"),
-              ("prices", "Prices"), ("skins", "Zombie Skins"), ("media", "Media")]
+              ("prices", "Prices"), ("ranks", "Ranks"), ("skins", "Zombie Skins"), ("media", "Media")]
 TAB_KEYS = {k for k, _ in ADMIN_TABS}
 TAB_HREF = {"settings": "/admin", "monitor": "/admin/ops", "inbox": "/admin/inbox", "updates": "/admin/updates",
-            "prices": "/admin/prices", "skins": "/admin/skins", "media": "/admin/media"}
+            "prices": "/admin/prices", "ranks": "/admin/ranks", "skins": "/admin/skins", "media": "/admin/media"}
 USER_RE = re.compile(r"^[a-z0-9_-]{3,24}$")
 _ctx = threading.local()
 
@@ -208,7 +208,7 @@ def tab_of(path):
         return "settings"
     if path.startswith("/admin/ops"):
         return "monitor"
-    for p, t in (("/admin/inbox", "inbox"), ("/admin/updates", "updates"), ("/admin/prices", "prices"), ("/admin/skins", "skins"), ("/admin/media", "media")):
+    for p, t in (("/admin/inbox", "inbox"), ("/admin/updates", "updates"), ("/admin/prices", "prices"), ("/admin/ranks", "ranks"), ("/admin/skins", "skins"), ("/admin/media", "media")):
         if path.startswith(p):
             return t
     return "owner"  # /admin/users*, /admin/backup, anything unknown
@@ -1172,6 +1172,87 @@ def updates_admin_page(csrf, msg=""):
     return HEAD.format(title="Updates", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
 
 
+# ---------- member ranks (limits per rank; the Minecraft plugin reads /ranks.json) ----------
+RANKS_FILE = os.getenv("RANKS_FILE") or os.path.join(BASE, "ranks.json")
+_ranklock = threading.RLock()
+RANK_LIMITS = [("ah", "AH listings", 10), ("orders", "Max items per order", 2304), ("homes", "Homes", 1), ("tokens", "Bio Tokens per minute", 1)]
+RANK_ID_RE = re.compile(r"^[a-z0-9_]{2,16}$")
+RANK_COLOR_RE = re.compile(r"^&(?:[0-9a-fk-or]|#[0-9a-fA-F]{6})$")
+RANKS = {}  # id -> {"name","color","ah","orders","homes","tokens"}; "member" always exists
+
+
+def rank_default():
+    return {"name": "Member", "color": "&7", "ah": 10, "orders": 2304, "homes": 1, "tokens": 1}
+
+
+def rank_clean(r):
+    d = rank_default()
+    name = str(r.get("name", "")).strip()[:20]
+    d["name"] = name or d["name"]
+    c = str(r.get("color", "")).strip()
+    d["color"] = c if RANK_COLOR_RE.match(c) else "&7"
+    for k, _, df in RANK_LIMITS:
+        try:
+            d[k] = max(0, min(1000000, int(float(str(r.get(k, df)).strip()))))
+        except ValueError:
+            d[k] = df
+    return d
+
+
+def ranks_load():
+    try:
+        with open(RANKS_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            RANKS.clear()
+            for k, v in d.items():
+                if RANK_ID_RE.match(k) and isinstance(v, dict):
+                    RANKS[k] = rank_clean(v)
+    except (OSError, ValueError):
+        pass
+    RANKS.setdefault("member", rank_default())
+
+
+def ranks_save():
+    tmp = RANKS_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(RANKS, f)
+        os.replace(tmp, RANKS_FILE)
+    except OSError:
+        pass
+
+
+def ranks_page(csrf, msg="", kind="ok"):
+    def fields(rid, r, new=False):
+        lim = "".join(
+            f'<div><label for="{k}-{rid}" style="margin-top:0">{lab}</label><input id="{k}-{rid}" name="{k}" type="number" min="0" max="1000000" value="{r[k]}" required></div>'
+            for k, lab, _ in RANK_LIMITS)
+        return (f'<div class="row"><div><label for="n-{rid}" style="margin-top:0">Display name</label><input id="n-{rid}" name="rname" maxlength="20" value="{E(r["name"])}" required></div>'
+                f'<div><label for="c-{rid}" style="margin-top:0">Colour <span class="hint">(&amp;c or &amp;#RRGGBB)</span></label><input id="c-{rid}" name="color" maxlength="9" value="{E(r["color"])}" required></div></div>'
+                f'<div class="row">{lim}</div>')
+    with _ranklock:
+        items = sorted(RANKS.items(), key=lambda kv: (kv[0] != "member", kv[0]))
+    rows = ""
+    for rid, r in items:
+        rm = "" if rid == "member" else f'<button class="btn ghost sm danger" type="submit" formaction="/admin/ranks/delete" formnovalidate onclick="return confirm(\'Delete this rank?\')">Delete</button>'
+        tag = " (default, everyone starts here)" if rid == "member" else ""
+        rows += (f'<li class="panel"><h3>{E(r["name"])} <span class="hint">{E(rid)}{tag}</span></h3><form method="post" action="/admin/ranks/save">'
+                 f'<input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="id" value="{E(rid)}">{fields(rid, r)}'
+                 f'<div style="display:flex;gap:var(--s2);margin-top:var(--s3)"><button class="btn sm" type="submit">Save</button>{rm}</div></form></li>')
+    m = f'<div class="msg {kind}" role="status">{E(msg)}</div>' if msg else ""
+    body = (
+        '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "ranks") +
+        '<main id="top"><div class="wrap"><div class="ops-top"><div><h1>Ranks</h1><p>Set what each rank gets. Applies to Oneblock and SMP (AH, orders, homes) and to all worlds for tokens per minute. Give a rank in game with /rank give name rank.</p></div></div>'
+        f'{m}<form method="post" action="/admin/ranks/save" class="panel"><input type="hidden" name="csrf" value="{csrf}"><fieldset style="margin:0"><legend>New rank</legend>'
+        '<label for="nid" style="margin-top:0">Rank id <span class="hint">(lowercase letters, numbers, _ ; used in /rank give)</span></label>'
+        '<input id="nid" name="id" required maxlength="16" pattern="[a-z0-9_]+" autocomplete="off" placeholder="vip">'
+        f'{fields("new", rank_default())}</fieldset><button class="btn" type="submit">Create rank</button></form>'
+        f'<div class="ops-sec"><h2>Ranks</h2><ul style="list-style:none;padding:0;display:grid;gap:var(--s4)">{rows}</ul></div></div></main></body></html>'
+    )
+    return HEAD.format(title="Ranks", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
+
+
 def users_page(csrf, msg="", kind="ok"):
     def boxes(sel, pre):
         return "".join(
@@ -1963,6 +2044,20 @@ class Handler(BaseHTTPRequestHandler):
             if not tok:
                 return self.send(200, admin_login_page(), private=True)
             return self.send(200, skins_page(csrf_for(tok)), private=True)
+        if path == "/ranks.json":
+            key = (self.headers.get("Authorization") or "")[7:] if (self.headers.get("Authorization") or "").startswith("Bearer ") else (parse_qs(urlparse(self.path).query).get("key", [""])[0])
+            if PRICES_KEY and not same(key, PRICES_KEY):
+                return self.send(403, "Forbidden", "text/plain", private=True)
+            with _ranklock:
+                dump = json.dumps({"version": 1, "ranks": RANKS})
+            return self.send(200, dump, "application/json", private=True)
+        if path == "/admin/ranks":
+            if not ADMIN_ON:
+                return self.send(503, NOT_ENABLED, private=True)
+            tok = self.session()
+            if not tok:
+                return self.send(200, admin_login_page(), private=True)
+            return self.send(200, ranks_page(csrf_for(tok)), private=True)
         if path == "/prices.json":
             key = (self.headers.get("Authorization") or "")[7:] if (self.headers.get("Authorization") or "").startswith("Bearer ") else (parse_qs(urlparse(self.path).query).get("key", [""])[0])
             if PRICES_KEY and not same(key, PRICES_KEY):
@@ -2095,6 +2190,27 @@ class Handler(BaseHTTPRequestHandler):
                     USERS[name].update(salt=salt, hash=user_hash(pw, salt))
                 users_save()
             return page(f"Saved {name}.")
+        if path in ("/admin/ranks/save", "/admin/ranks/delete"):
+            rid = form.get("id", [""])[0].strip().lower()
+            page = lambda m, k="ok": self.send(200 if k == "ok" else 400, ranks_page(csrf_for(tok), m, k), private=True)
+            if not RANK_ID_RE.match(rid):
+                return page("Rank id must be 2 to 16 lowercase letters, numbers or _.", "err")
+            if path == "/admin/ranks/delete":
+                if rid == "member":
+                    return page("The default Member rank can't be deleted.", "err")
+                with _ranklock:
+                    RANKS.pop(rid, None)
+                    ranks_save()
+                return page(f"Deleted {rid}.")
+            col = form.get("color", [""])[0].strip()
+            if not RANK_COLOR_RE.match(col):
+                return page("Colour must look like &c or &#RRGGBB.", "err")
+            with _ranklock:
+                if rid not in RANKS and len(RANKS) >= 40:
+                    return page("Too many ranks.", "err")
+                RANKS[rid] = rank_clean({"name": form.get("rname", [""])[0], "color": col, **{k: form.get(k, [""])[0] for k, _, _ in RANK_LIMITS}})
+                ranks_save()
+            return page(f"Saved {rid}.")
         if path == "/admin/updates/add":
             title, text, tag = (form.get(k, [""])[0].replace("\r\n", "\n").strip() for k in ("title", "text", "tag"))
             if not title or len(title) > 80 or len(text) > 400 or tag not in UPD_TAGS:
@@ -2172,6 +2288,7 @@ if __name__ == "__main__":
     upd_load()
     prices_load()
     users_load()
+    ranks_load()
     if MONITOR_INTERVAL > 0:
         threading.Thread(target=monitor_loop, daemon=True).start()
     else:
