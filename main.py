@@ -9,11 +9,9 @@ Environment variables (set them in the bot-hosting.net panel):
   MONITOR_INTERVAL     optional: seconds between health checks (default 60, 0 turns the monitor off)
   MESSAGES_FILE        optional path for the contact inbox (default messages.json next to main.py)
   UPDATES_FILE         optional path for the updates log (default updates.json next to main.py)
-  PRICES_KEY           optional: if set, /prices.json needs "Authorization: Bearer <key>" (or ?key=<key>). The Minecraft plugin sends it.
-  PRICES_FILE          optional path for the game prices (default prices.json next to main.py)
   MONITOR_URLS         optional override, e.g. "donut=https://a.example,pixel=https://b.example,site=https://c.example"
 """
-import hashlib, hmac, html, json, os, re, secrets, ssl, threading, time
+import hashlib, hmac, html, json, math, os, re, secrets, ssl, threading, time
 import urllib.error, urllib.request
 from email.parser import BytesParser
 from email.policy import default as _email_policy
@@ -122,22 +120,17 @@ def _sig(msg):
     return hmac.new(SECRET, msg.encode(), hashlib.sha256).hexdigest()
 
 
-def make_session(user="*"):
+def make_session():
     exp = str(int(time.time()) + SESSION_TTL)
-    return user + "~" + exp + "." + _sig("s" + user + "~" + exp)
+    return exp + "." + _sig("s" + exp)
 
 
 def check_session(token):
-    """Returns the username ("*" = owner) for a valid token, else None."""
     try:
-        head, sig = token.split(".", 1)
-        user, exp = head.split("~", 1)
-        if int(exp) > time.time() and hmac.compare_digest(sig, _sig("s" + head)):
-            if user == "*" or user in USERS:
-                return user
+        exp, sig = token.split(".", 1)
+        return int(exp) > time.time() and hmac.compare_digest(sig, _sig("s" + exp))
     except (ValueError, AttributeError):
-        pass
-    return None
+        return False
 
 
 def csrf_for(token):
@@ -146,77 +139,6 @@ def csrf_for(token):
 
 def same(a, b):
     return hmac.compare_digest(a.encode(), b.encode())
-
-
-# ---------- admin users (owner = ADMIN_USERNAME / ADMIN_PASSWORD, everyone else is limited to chosen tabs) ----------
-USERS_FILE = os.getenv("USERS_FILE") or os.path.join(BASE, "users.json")
-_userlock = threading.RLock()
-USERS = {}  # name -> {"salt","hash","tabs":[...]}
-ADMIN_TABS = [("settings", "Settings"), ("monitor", "Monitor"), ("inbox", "Inbox"), ("updates", "Updates"),
-              ("prices", "Prices"), ("ranks", "Ranks"), ("skins", "Zombie Skins"), ("media", "Media")]
-TAB_KEYS = {k for k, _ in ADMIN_TABS}
-TAB_HREF = {"settings": "/admin", "monitor": "/admin/ops", "inbox": "/admin/inbox", "updates": "/admin/updates",
-            "prices": "/admin/prices", "ranks": "/admin/ranks", "skins": "/admin/skins", "media": "/admin/media"}
-USER_RE = re.compile(r"^[a-z0-9_-]{3,24}$")
-_ctx = threading.local()
-
-
-def user_hash(pw, salt):
-    return hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salt), 200000).hex()
-
-
-def users_load():
-    try:
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            d = json.load(f)
-        if isinstance(d, dict):
-            USERS.clear()
-            for k, v in d.items():
-                if USER_RE.match(k) and isinstance(v, dict) and "salt" in v and "hash" in v:
-                    USERS[k] = {"salt": str(v["salt"]), "hash": str(v["hash"]),
-                                "tabs": [t for t in v.get("tabs", []) if t in TAB_KEYS]}
-    except (OSError, ValueError):
-        pass
-
-
-def users_save():
-    tmp = USERS_FILE + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(USERS, f)
-        os.replace(tmp, USERS_FILE)
-    except OSError:
-        pass
-
-
-def is_owner():
-    return getattr(_ctx, "user", None) == "*"
-
-
-def can(tab):
-    u = getattr(_ctx, "user", None)
-    if u == "*":
-        return True
-    return bool(u and u in USERS and tab in USERS[u]["tabs"])
-
-
-def tab_of(path):
-    """Which tab a /admin path belongs to. "owner" = owner only, None = no tab needed."""
-    if path in ("/admin/login", "/admin/logout"):
-        return None
-    if path == "/admin" or path == "/admin/save":
-        return "settings"
-    if path.startswith("/admin/ops"):
-        return "monitor"
-    for p, t in (("/admin/inbox", "inbox"), ("/admin/updates", "updates"), ("/admin/prices", "prices"), ("/admin/ranks", "ranks"), ("/admin/skins", "skins"), ("/admin/media", "media")):
-        if path.startswith(p):
-            return t
-    return "owner"  # /admin/users*, /admin/backup, anything unknown
-
-
-def allowed(path):
-    t = tab_of(path)
-    return t is None or (is_owner() if t == "owner" else can(t))
 
 
 # ---------- updates log ----------
@@ -244,89 +166,6 @@ def upd_save():
         os.replace(tmp, UPDATES_FILE)
     except OSError:
         pass
-
-
-# ---------- game prices (read by the Minecraft plugin, edited in /admin/prices) ----------
-PRICES_FILE = os.getenv("PRICES_FILE") or os.path.join(BASE, "prices.json")
-PRICES_DEFAULT = os.path.join(BASE, "prices.default.json")
-PRICES_KEY = os.getenv("PRICES_KEY") or ""
-_pricelock = threading.Lock()
-PRICES = {"version": 1, "updated": 0}
-_MAT = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
-_MODE = re.compile(r"^[a-z0-9_]{1,20}$")
-_CATID = re.compile(r"^[a-z0-9_]{1,24}$")
-
-
-def prices_clean(d):
-    """Validate and normalise an edited prices document. Returns (clean, error)."""
-    if not isinstance(d, dict):
-        return None, "Not a prices file."
-    out = {"version": 1, "updated": int(time.time())}
-    for mode, md in d.items():
-        if mode in ("version", "updated"):
-            continue
-        if not _MODE.match(str(mode)) or not isinstance(md, dict):
-            return None, "Bad game mode name."
-        worth, cats = md.get("worth", {}), md.get("categories", {})
-        if not isinstance(worth, dict) or not isinstance(cats, dict):
-            return None, "Bad price tables."
-        if len(worth) > 4000 or len(cats) > 7:
-            return None, "Too many items or categories (max 4000 worth entries, 7 categories)."
-        cw = {}
-        for name, v in worth.items():
-            if not _MAT.match(str(name)) or isinstance(v, bool) or not isinstance(v, (int, float)) or not (0 <= v <= 100000000):
-                return None, "Bad sell worth for " + str(name)[:40] + "."
-            cw[name] = round(float(v), 2) if v != int(v) else int(v)
-        cc = {}
-        for cid, c in cats.items():
-            if not _CATID.match(str(cid)) or not isinstance(c, dict):
-                return None, "Bad category id."
-            name, icon, items = c.get("name", cid), c.get("icon", "CHEST"), c.get("items", {})
-            if not isinstance(name, str) or len(name) > 60 or not isinstance(icon, str) or not _MAT.match(icon) or not isinstance(items, dict) or len(items) > 1500:
-                return None, "Bad category " + str(cid)[:24] + "."
-            ci = {}
-            for iname, p in items.items():
-                if not _MAT.match(str(iname)) or isinstance(p, bool) or not isinstance(p, (int, float)) or not (1 <= p <= 1000000000):
-                    return None, "Bad shop price for " + str(iname)[:40] + "."
-                ci[iname] = int(round(p))
-            cc[cid] = {"name": name, "icon": icon, "items": ci}
-        out[mode] = {"worth": cw, "categories": cc}
-    if len(out) <= 2:
-        return None, "No game mode in the file."
-    return out, None
-
-
-def prices_load():
-    for path in (PRICES_FILE, PRICES_DEFAULT):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                clean, err = prices_clean(json.load(f))
-            if clean:
-                if "smp" not in clean and "oneblock" in clean:
-                    # first start with the SMP: it begins as a copy of the Oneblock prices, then you edit it in admin > Prices
-                    import copy
-                    clean["smp"] = copy.deepcopy(clean["oneblock"])
-                    try:
-                        prices_save(clean)
-                        return
-                    except OSError:
-                        pass
-                with _pricelock:
-                    PRICES.clear()
-                    PRICES.update(clean)
-                return
-        except (OSError, ValueError):
-            continue
-
-
-def prices_save(clean):
-    tmp = PRICES_FILE + ".tmp"
-    with _pricelock:
-        PRICES.clear()
-        PRICES.update(clean)
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(PRICES, f, indent=1)
-        os.replace(tmp, PRICES_FILE)
 
 
 # ---------- screenshot media ----------
@@ -546,305 +385,394 @@ def effective(s):
 # Design system: near-black studio, electric violet accent, restrained blue secondary. Flat: no glows, no gradients.
 # Spacing scale: 4 8 12 16 24 32 48 72 112 176 (--s1..--s10). One radius (2px). Hairlines carry structure.
 # Type: Schibsted Grotesk (display, tight editorial grotesk) / Hanken Grotesk (text). Sentence case throughout.
-CSS = """
+CSS = r"""/* Void Labs design system: paper, ink, one signal colour.
+   Type: Archivo (variable width) + JetBrains Mono for data. Radius 0 everywhere except status dots.
+   Rules: 1.5px ink lines carry structure. No shadows, no gradients, no card grids. */
 :root{
---void:#0b0b0f;--char:#141419;--raised:#1b1b22;--line:#2a2a33;--line-2:#3a3a46;
---text:#ececf1;--muted:#a1a1b0;--violet:#8f6bff;--violet-text:#a78bfa;--blue:#7fa3ff;
---ok:#4ade80;--warn:#fbbf24;--bad:#f87171;
---display:"Schibsted Grotesk","Helvetica Neue",Arial,system-ui,sans-serif;
---body:"Hanken Grotesk",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+--paper:#eeeae0;--paper-2:#e2ddd0;--card:#f8f5ed;--ink:#12110e;--ink-2:#4a473f;--hair:#b9b2a1;
+--signal:#ff4d1a;--on-ink-2:#aaa496;
+--ok:#1b6e37;--warn:#8f5200;--bad:#b0241b;
+--donut:#f5a524;--pixel:#2ed47a;
+--display:"Archivo","Arial Narrow","Helvetica Neue",Arial,system-ui,sans-serif;
+--body:"Archivo","Helvetica Neue",Arial,system-ui,-apple-system,"Segoe UI",sans-serif;
+--mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,"DejaVu Sans Mono",monospace;
 --s1:.25rem;--s2:.5rem;--s3:.75rem;--s4:1rem;--s5:1.5rem;--s6:2rem;--s7:3rem;--s8:4.5rem;--s9:7rem;--s10:11rem;
---gutter:clamp(1.25rem,4.5vw,3.5rem);--bar:4.5rem;--r:2px}
+--gutter:clamp(1.25rem,4.5vw,3.5rem);--bar:4rem;--rule:1.5px;--r:0}
 *{box-sizing:border-box;margin:0;padding:0}
-html{background:var(--void);color-scheme:dark;-webkit-text-size-adjust:100%;scroll-padding-top:var(--bar)}
+html{background:var(--paper);color-scheme:light;-webkit-text-size-adjust:100%;scroll-padding-top:calc(var(--bar) + var(--s4))}
 @media(prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
-body{font-family:var(--body);color:var(--text);background:var(--void);line-height:1.6;font-size:1.0625rem;min-height:100vh;min-height:100svh;
-display:flex;flex-direction:column;-webkit-font-smoothing:antialiased}
+body{font-family:var(--body);font-stretch:100%;color:var(--ink);background:var(--paper);line-height:1.6;font-size:1.0625rem;min-height:100vh;min-height:100svh;
+display:flex;flex-direction:column;-webkit-font-smoothing:antialiased;touch-action:manipulation;-webkit-tap-highlight-color:rgba(255,77,26,.25)}
 a{color:inherit;text-decoration:none}
-::selection{background:var(--violet);color:var(--void)}
-:focus-visible{outline:2px solid var(--violet-text);outline-offset:4px;border-radius:var(--r)}
+::selection{background:var(--signal);color:var(--ink)}
+:focus-visible{outline:3px solid var(--ink);outline-offset:3px}
+.on-ink :focus-visible,.site-foot :focus-visible{outline-color:var(--signal)}
 main{flex:1}
-.wrap{width:100%;max-width:86rem;margin:0 auto;padding-inline:var(--gutter)}
-.skip{position:absolute;left:var(--s4);top:-4rem;z-index:100;background:var(--violet);color:var(--void);padding:var(--s2) var(--s4);font-weight:700;border-radius:var(--r)}
+.wrap{width:100%;max-width:90rem;margin:0 auto;padding-inline:var(--gutter)}
+.skip{position:absolute;left:var(--s4);top:-5rem;z-index:100;background:var(--ink);color:var(--paper);padding:var(--s3) var(--s4);font-weight:700}
 .skip:focus{top:var(--s3)}
+.mono,.kicker,.label{font-family:var(--mono);font-size:.75rem;font-weight:500;letter-spacing:.06em;text-transform:uppercase}
+.sq{display:inline-block;width:.17em;height:.17em;background:var(--signal);margin-left:.06em;vertical-align:baseline}
 
-.site-head{position:sticky;top:0;z-index:30;height:var(--bar);background:var(--void);border-bottom:1px solid var(--line)}
+/* header */
+.banner{background:var(--signal);color:var(--ink);font:500 .8125rem/1.4 var(--mono);letter-spacing:.04em;text-transform:uppercase;text-align:center;padding:var(--s3) var(--gutter);border-bottom:var(--rule) solid var(--ink)}
+.site-head{position:sticky;top:0;z-index:30;height:var(--bar);background:var(--paper);border-bottom:var(--rule) solid var(--ink)}
 .site-head .wrap{height:100%;display:flex;align-items:center;justify-content:space-between;gap:var(--s4)}
-.mark{display:inline-flex;align-items:center;gap:var(--s3);font:700 1.2rem/1 var(--display);letter-spacing:-.01em}
-.mark svg{width:1.6rem;height:1.6rem;flex:none}
-.site-head nav{display:flex;gap:var(--s6)}
-.site-head nav a{position:relative;padding:var(--s2) 0;font-weight:600;color:var(--muted);transition:color .2s}
-.site-head nav a::after{content:"";position:absolute;left:0;right:0;bottom:0;height:1px;background:var(--violet);transform:scaleX(0);transform-origin:left;transition:transform .3s}
-.site-head nav a:hover{color:var(--text)}.site-head nav a:hover::after{transform:scaleX(1)}
+.mark{display:inline-flex;align-items:center;gap:var(--s3);font:800 1.125rem/1 var(--display);font-stretch:88%;letter-spacing:.02em;text-transform:uppercase;min-height:2.75rem}
+.mark svg{width:1.75rem;height:1.75rem;flex:none}
+.head-r{display:flex;align-items:center;gap:var(--s6)}
+.site-head nav{display:flex;gap:var(--s5)}
+.site-head nav a{position:relative;display:inline-flex;align-items:center;min-height:2.75rem;font:500 .8125rem/1 var(--mono);letter-spacing:.06em;text-transform:uppercase}
+.site-head nav a::after{content:"";position:absolute;left:0;right:0;bottom:.55rem;height:var(--rule);background:var(--ink);transform:scaleX(0);transform-origin:left;transition:transform .3s}
+.site-head nav a:hover::after,.site-head nav a:focus-visible::after{transform:scaleX(1)}
+.clock{font:500 .8125rem/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);font-variant-numeric:tabular-nums;border-left:var(--rule) solid var(--ink);padding-left:var(--s5)}
+
+/* status marks: shape + word, never colour alone */
+.st{display:inline-flex;align-items:center;gap:var(--s2);font:500 .8125rem/1.2 var(--mono);letter-spacing:.06em;text-transform:uppercase}
+.st::before{content:"";width:.65rem;height:.65rem;flex:none;border-radius:50%;background:currentColor}
+.st-maintenance::before{border-radius:0;transform:rotate(45deg) scale(.9)}
+.st-offline::before{background:transparent;border:2px solid currentColor}
+.st-online{color:var(--ok)}.st-maintenance{color:var(--warn)}.st-offline{color:var(--bad)}
+@media(prefers-reduced-motion:no-preference){
+.st-online::before{animation:ping 2.4s ease-out infinite}}
+@keyframes ping{0%{box-shadow:0 0 0 0 rgba(27,110,55,.45)}70%,100%{box-shadow:0 0 0 .5rem rgba(27,110,55,0)}}
 
 /* hero */
-.hero{border-bottom:1px solid var(--line)}
-.hero-in{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--s7) clamp(2rem,5vw,5rem);align-items:end;padding-block:clamp(3.5rem,8vw,7rem) var(--s8)}
-h1{font:800 clamp(2.6rem,7.4vw,7rem)/.92 var(--display);letter-spacing:-.045em}
-h1 .ln{display:block;overflow:hidden;padding-bottom:.1em;margin-bottom:-.1em}
+.hero{border-bottom:var(--rule) solid var(--ink)}
+.meta{display:flex;flex-wrap:wrap;border-bottom:var(--rule) solid var(--ink)}
+.meta>*{padding:var(--s3) var(--s5) var(--s3) 0;margin-right:var(--s5);display:flex;align-items:center;color:var(--ink-2)}
+.meta a{color:var(--ink);margin-left:auto;margin-right:0;padding-right:0;text-decoration:underline;text-underline-offset:.25em}
+.meta a:hover{text-decoration-thickness:2px}
+.hero-in{display:grid;grid-template-columns:minmax(0,8fr) minmax(0,4fr);gap:var(--s7) clamp(2rem,5vw,5rem);align-items:center;padding-block:clamp(2.5rem,6vw,5.5rem)}
+h1{font:800 clamp(2.75rem,8.4vw,8.25rem)/.9 var(--display);font-stretch:80%;letter-spacing:-.035em;text-wrap:balance}
+h1 .ln{display:block;overflow:hidden;padding-bottom:.14em;margin-bottom:-.14em}
 h1 .ln>span{display:block}
-.lede{margin-top:var(--s7);font-size:clamp(1.125rem,1.5vw,1.25rem);line-height:1.55;color:var(--muted);max-width:27em}
-.lede b{color:var(--text);font-weight:600}
-.tiles{display:grid;grid-template-columns:1fr 1fr;gap:var(--s4)}
-.tile{display:flex;flex-direction:column;background:var(--char);border:1px solid var(--line-2);border-radius:var(--r);overflow:hidden;transition:border-color .25s,transform .35s cubic-bezier(.2,.8,.2,1)}
-.tile:hover{border-color:var(--violet);transform:translateY(-4px)}
-.t-art{position:relative;aspect-ratio:4/3;background:var(--void);border-bottom:1px solid var(--line-2);overflow:hidden;display:flex;align-items:center;justify-content:center}
-.t-art img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:top left}
-.t-art svg{width:62%;height:auto}
-.t-art .px{width:48%}
-.t-cap{display:flex;flex-direction:column;gap:var(--s2);padding:var(--s4)}
-.t-cap .st{align-items:flex-start}.t-cap .st::before{margin-top:.4em}
-.t-cap .nm{font:700 1.5rem/1 var(--display);letter-spacing:-.02em;transition:color .2s}
-.tile:hover .nm{color:var(--violet-text)}
+.lede{margin-top:var(--s6);font-size:clamp(1.125rem,1.5vw,1.3125rem);line-height:1.5;max-width:30em}
+.lede b{font-weight:700}
+.hero-cta{display:flex;gap:var(--s3);flex-wrap:wrap;margin-top:var(--s6)}
+.dial{justify-self:end;width:min(100%,25rem)}
+.dial svg{display:block;width:100%;height:auto;overflow:visible}
+.dial .hand{transform-box:view-box;transform-origin:100px 100px}
+.dial-cap{display:flex;justify-content:space-between;gap:var(--s3);margin-top:var(--s4);font:500 .75rem/1.3 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.dial-cap b{color:var(--ink);font-weight:700}
+.board{border-top:var(--rule) solid var(--ink)}
+.board a{display:grid;grid-template-columns:3.5rem minmax(0,1fr) minmax(0,16rem) 11rem 2.5rem;align-items:center;gap:var(--s4);padding:var(--s5) 0;border-bottom:var(--rule) solid var(--ink);position:relative;isolation:isolate;transition:padding .3s cubic-bezier(.2,.8,.2,1)}
+.board a:last-child{border-bottom:0}
+.board a::before{content:"";position:absolute;inset:0 calc(var(--gutter)*-1);background:var(--pc);z-index:-1;transform:scaleY(0);transform-origin:bottom;transition:transform .35s cubic-bezier(.2,.8,.2,1)}
+.board a:hover::before,.board a:focus-visible::before{transform:scaleY(1)}
+.board a:hover .st,.board a:focus-visible .st{color:var(--ink)}
+.board a:hover .st::before{animation:none;box-shadow:none}
+.board .idx{font:500 .8125rem var(--mono);color:var(--ink-2)}
+.board a:hover .idx{color:var(--ink)}
+.board .nm{font:800 clamp(2.25rem,6vw,5.5rem)/.95 var(--display);font-stretch:80%;letter-spacing:-.035em}
+.board .what{font-size:1rem;line-height:1.35}
+.board .go{justify-self:end;width:1.75rem;height:1.75rem;transition:transform .25s}
+.board a:hover .go{transform:translate(3px,-3px)}
+.board a:hover{padding-left:var(--s3)}
+.pc-donut{--pc:var(--donut)}.pc-pixel{--pc:var(--pixel)}
 @media(prefers-reduced-motion:no-preference){
 h1 .ln>span{animation:rise 1s cubic-bezier(.2,.8,.2,1) both}
 h1 .ln:nth-child(2)>span{animation-delay:.09s}h1 .ln:nth-child(3)>span{animation-delay:.18s}
-.lede{animation:fade .9s .45s both}.tiles{animation:fade 1s .35s both}}
+.lede,.hero-cta{animation:fade .9s .4s both}.dial{animation:fade 1.2s .3s both}
+.board a{animation:up .8s cubic-bezier(.2,.8,.2,1) both}.board a:nth-child(1){animation-delay:.5s}.board a:nth-child(2){animation-delay:.6s}}
 @keyframes rise{from{transform:translateY(105%)}}
 @keyframes fade{from{opacity:0}}
+@keyframes up{from{opacity:0;transform:translateY(14px)}}
 
-/* status */
-.st{display:inline-flex;align-items:center;gap:var(--s2);font-weight:600;font-size:.9375rem}
-.st::before{content:"";width:.6rem;height:.6rem;flex:none;border-radius:50%;background:var(--ok)}
-.st-maintenance::before{background:var(--warn);border-radius:1px;transform:rotate(45deg)}
-.st-offline::before{background:transparent;border:2px solid var(--bad)}
-.st-online{color:var(--ok)}.st-maintenance{color:var(--warn)}.st-offline{color:var(--bad)}
+/* buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--s3);min-height:3rem;background:var(--ink);color:var(--paper);font:700 1rem/1 var(--body);
+padding:.95rem 1.35rem;border:var(--rule) solid var(--ink);border-radius:var(--r);cursor:pointer;transition:background .2s,color .2s,border-color .2s}
+.btn svg{width:1rem;height:1rem;flex:none;transition:transform .25s}
+.btn:hover{background:var(--signal);color:var(--ink)}
+.btn:hover svg{transform:translate(2px,-2px)}
+.btn:active{transform:translateY(1px)}
+.btn.ghost{background:transparent;color:var(--ink)}
+.btn.ghost:hover{background:var(--ink);color:var(--paper)}
+.btn.sm{min-height:2.75rem;padding:.65rem 1rem;font-size:.9375rem}
+.btn[disabled]{opacity:.5;cursor:progress}
 
-/* projects */
-.sec-head{padding-block:var(--s9) var(--s7);display:flex;justify-content:space-between;align-items:end;gap:var(--s6);flex-wrap:wrap}
-h2{font:800 clamp(2.5rem,6vw,5rem)/.95 var(--display);letter-spacing:-.04em}
-.sec-head p{color:var(--muted);max-width:24em}
-.project{border-top:1px solid var(--line);padding-block:var(--s8)}
-.project-in{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:var(--s7) clamp(2rem,6vw,6rem);align-items:start}
-.project.flip .project-in{grid-template-columns:minmax(0,7fr) minmax(0,5fr)}
+/* work */
+.sec-head{padding-block:var(--s9) var(--s7);display:grid;grid-template-columns:minmax(0,8fr) minmax(0,4fr);gap:var(--s5) var(--s7);align-items:end}
+h2{font:800 clamp(2.5rem,7vw,6.5rem)/.92 var(--display);font-stretch:80%;letter-spacing:-.035em}
+.sec-head p{max-width:24em}
+.project{border-top:var(--rule) solid var(--ink)}
+.p-top{display:flex;justify-content:space-between;align-items:center;gap:var(--s4);flex-wrap:wrap;padding-block:var(--s3);border-bottom:var(--rule) solid var(--ink)}
+.p-top>span:first-child{color:var(--ink-2)}
+.project-in{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,8fr);gap:var(--s7) clamp(2rem,5vw,5rem);align-items:start;padding-block:var(--s7) var(--s9)}
+.project.flip .project-in{grid-template-columns:minmax(0,8fr) minmax(0,4fr)}
 .project.flip .p-copy{order:2}
 .p-copy{position:sticky;top:calc(var(--bar) + var(--s6))}
-h3{font:800 clamp(3.25rem,7vw,6.5rem)/.9 var(--display);letter-spacing:-.045em;margin:var(--s4) 0 var(--s5)}
-.desc{font-size:1.1875rem;line-height:1.6;color:var(--muted);max-width:28em}
-.feats{list-style:none;margin:var(--s6) 0 var(--s6);max-width:34rem}
-.feats li{display:grid;grid-template-columns:9.5rem 1fr;gap:var(--s4);border-top:1px solid var(--line);padding:var(--s3) 0;font-weight:600}
-.feats li span{font-weight:400;color:var(--muted)}
+h3{font:800 clamp(3.5rem,8vw,7.5rem)/.88 var(--display);font-stretch:80%;letter-spacing:-.04em;margin-bottom:var(--s5)}
+.desc{font-size:1.125rem;line-height:1.55;max-width:28em}
+.p-note{margin-top:var(--s4);padding:var(--s3) var(--s4);background:var(--pc);border:var(--rule) solid var(--ink);font-weight:600;max-width:28em}
+.feats{list-style:none;margin:var(--s6) 0;max-width:30rem}
+.feats li{display:grid;grid-template-columns:8.5rem 1fr;gap:var(--s4);border-top:1px solid var(--hair);padding:var(--s3) 0;font-weight:700}
+.feats li:last-child{border-bottom:1px solid var(--hair)}
+.feats li span{font-weight:400;color:var(--ink-2)}
 .cta{display:flex;align-items:center;gap:var(--s5);flex-wrap:wrap}
-.host{color:var(--muted);font-size:.9375rem}
-.feats li:last-child{border-bottom:1px solid var(--line)}
-.btn{display:inline-flex;align-items:center;gap:var(--s3);background:var(--violet);color:var(--void);font:700 1rem/1 var(--body);
-padding:1.05rem 1.4rem;border:1px solid var(--violet);border-radius:var(--r);cursor:pointer;transition:background .2s,color .2s,border-color .2s}
-.btn svg{width:1rem;height:1rem;transition:transform .25s}
-.btn:hover{background:var(--text);border-color:var(--text)}
-.btn:hover svg{transform:translate(2px,-2px)}
-.btn.ghost{background:transparent;color:var(--text);border-color:var(--line-2)}
-.btn.ghost:hover{background:var(--text);color:var(--void);border-color:var(--text)}
-.btn.sm{padding:.7rem 1rem}
-.p-art{position:relative}
-.shot{position:relative;display:block}
-.shot::before{content:"";position:absolute;inset:0;border:1px solid rgba(143,107,255,.5);transform:translate(14px,14px);border-radius:var(--r);pointer-events:none;transition:transform .35s cubic-bezier(.2,.8,.2,1)}
-.shot:hover::before{transform:translate(20px,20px)}
-.shot img{position:relative;display:block;width:100%;aspect-ratio:16/10;object-fit:cover;object-position:top left;background:var(--char);border:1px solid var(--line-2);border-radius:var(--r)}
-.flip .shot::before{transform:translate(-14px,14px)}.flip .shot:hover::before{transform:translate(-20px,20px)}
-.mark-art{display:flex;justify-content:center;align-items:center;border:1px solid var(--line);aspect-ratio:16/10;background:var(--char);border-radius:var(--r)}
-.mark-art svg{width:min(60%,22rem);height:auto}
-.px{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;width:min(52%,18rem);aspect-ratio:1}
-.px b{border:1px solid var(--line-2)}.px b.on{background:var(--violet);border-color:var(--violet)}
+.host{font:500 .8125rem var(--mono);color:var(--ink-2);letter-spacing:.02em}
+.slab{background:var(--pc);border:var(--rule) solid var(--ink);padding:clamp(.75rem,2.4vw,2rem) clamp(.75rem,2.4vw,2rem) var(--s3)}
+.shot{display:block}
+.shot img,.slab .shotimg{display:block;width:100%;height:auto;aspect-ratio:16/10;object-fit:cover;object-position:top left;background:var(--ink);border:var(--rule) solid var(--ink)}
+.slab-cap{display:flex;justify-content:space-between;gap:var(--s4);flex-wrap:wrap;padding-top:var(--s3)}
+.mark-art{display:flex;justify-content:center;align-items:center;aspect-ratio:16/10;background:var(--ink);border:var(--rule) solid var(--ink)}
+.mark-art svg{width:min(46%,18rem);height:auto}
+.px{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;width:min(40%,14rem);aspect-ratio:1}
+.px b{border:1px solid #5b574d}.px b.on{background:var(--pixel);border-color:var(--pixel)}
 @media(prefers-reduced-motion:no-preference){
-.js .shot{opacity:0;transform:translateY(24px);transition:opacity .9s ease,transform 1s cubic-bezier(.2,.8,.2,1)}
-.js .shot.in{opacity:1;transform:none}}
+.js .rv{opacity:0;transform:translateY(22px);transition:opacity .8s ease,transform .9s cubic-bezier(.2,.8,.2,1)}
+.js .rv.in{opacity:1;transform:none}}
+
+/* updates (ink band) */
+.on-ink{background:var(--ink);color:var(--paper)}
+.on-ink .sec-head p{color:var(--on-ink-2)}
+.updates-sec{padding-bottom:var(--s9)}
+.upd{list-style:none;border-top:var(--rule) solid var(--paper)}
+.upd li{display:grid;grid-template-columns:11rem 8rem minmax(0,1fr);gap:var(--s4) var(--s6);padding:var(--s5) 0;border-bottom:1px solid #3d3a33;align-items:baseline}
+.upd time{font:500 .8125rem var(--mono);letter-spacing:.04em;color:var(--on-ink-2);text-transform:uppercase;font-variant-numeric:tabular-nums}
+.upd h3{font:700 clamp(1.25rem,2.2vw,1.75rem)/1.2 var(--display);font-stretch:90%;letter-spacing:-.01em;margin:0}
+.upd .tag{display:inline-block;font:700 .75rem/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;background:var(--signal);color:var(--ink);padding:.3rem .5rem}
+.upd p{color:var(--on-ink-2);max-width:40em;white-space:pre-wrap;margin-top:var(--s2)}
 
 /* about */
-.about{border-top:1px solid var(--line);background:var(--char)}
-.about-in{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:var(--s7) clamp(2rem,6vw,6rem);padding-block:var(--s9)}
-.about h2{max-width:8ch}
-.statement{font:600 clamp(1.5rem,2.8vw,2.375rem)/1.25 var(--display);letter-spacing:-.02em;max-width:22em}
-.focus{list-style:none;margin:var(--s7) 0}
-.focus li{display:grid;grid-template-columns:9rem 1fr;gap:var(--s4);border-top:1px solid var(--line-2);padding:var(--s4) 0}
-.focus li:last-child{border-bottom:1px solid var(--line-2)}
-.focus strong{font:700 1.125rem/1.4 var(--display);color:var(--violet-text)}
-.focus span{color:var(--muted)}
-.bio h3{font:700 1.25rem/1.2 var(--display);letter-spacing:-.01em;margin:0 0 var(--s3)}
-.bio p{color:var(--muted);max-width:36em}.bio p+p{margin-top:var(--s4)}
+.about{background:var(--paper-2);border-top:var(--rule) solid var(--ink)}
+.about-in{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--s7) clamp(2rem,6vw,6rem);padding-block:var(--s9)}
+.kicker{display:flex;align-items:center;gap:var(--s3);margin-bottom:var(--s5);font-size:.8125rem}
+.kicker::before{content:"";width:.65rem;height:.65rem;background:var(--signal)}
+.statement{font:800 clamp(2rem,4.6vw,4.5rem)/1.02 var(--display);font-stretch:82%;letter-spacing:-.03em;max-width:15em;text-wrap:balance}
+.focus{list-style:none;counter-reset:f;border-top:var(--rule) solid var(--ink)}
+.focus li{counter-increment:f;display:grid;grid-template-columns:2.5rem 8.5rem 1fr;gap:var(--s3);border-bottom:var(--rule) solid var(--ink);padding:var(--s4) 0;align-items:baseline}
+.focus li::before{content:counter(f,decimal-leading-zero);font:500 .8125rem var(--mono);color:var(--ink-2)}
+.focus strong{font:800 1.125rem/1.3 var(--display);font-stretch:90%}
+.focus span{color:var(--ink-2)}
+.bio{margin-top:var(--s7);max-width:36em}
+.bio h3{font:800 1.5rem/1.2 var(--display);font-stretch:90%;letter-spacing:-.015em;margin:0 0 var(--s3)}
+.bio p+p{margin-top:var(--s4)}
 
-/* contact */
-.contact{border-top:1px solid var(--line)}
+/* contact (signal block) */
+.contact{background:var(--signal);color:var(--ink);border-top:var(--rule) solid var(--ink)}
 .contact-in{padding-block:var(--s9)}
-.contact h2{margin-bottom:var(--s4)}
-.contact .sub{color:var(--muted);font-size:1.1875rem;max-width:26em;margin-bottom:var(--s7)}
-.links a{display:flex;justify-content:space-between;align-items:baseline;gap:var(--s5);border-top:1px solid var(--line-2);padding:var(--s5) 0;
-font:700 clamp(1.5rem,5vw,3.75rem)/1.1 var(--display);letter-spacing:-.025em;overflow-wrap:anywhere;transition:color .2s,padding .3s}
-.links a:last-child{border-bottom:1px solid var(--line-2)}
-.links small{font:600 1rem var(--body);letter-spacing:0;color:var(--muted);flex:none}
-.links a:hover{color:var(--violet-text);padding-left:var(--s4)}
+.contact-top{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:var(--s6) clamp(2rem,6vw,6rem);align-items:start}
+.contact h2{font-size:clamp(3rem,9vw,8.5rem)}
+.contact .sub{font-size:1.1875rem;max-width:22em;margin-top:var(--s5);font-weight:500}
+.links{border-top:var(--rule) solid var(--ink)}
+.links a{display:flex;justify-content:space-between;align-items:baseline;gap:var(--s5);border-bottom:var(--rule) solid var(--ink);padding:var(--s5) var(--s3) var(--s5) 0;
+font:800 clamp(1.5rem,3.4vw,3rem)/1.1 var(--display);font-stretch:85%;letter-spacing:-.02em;overflow-wrap:anywhere;transition:background .2s,color .2s,padding .3s}
+.links small{font:500 .75rem var(--mono);letter-spacing:.06em;text-transform:uppercase;flex:none}
+.links a:hover{background:var(--ink);color:var(--paper);padding-left:var(--s4)}
+.links:empty{display:none}
+.site-foot{background:var(--ink);color:var(--paper);border-top:var(--rule) solid var(--ink);padding-block:var(--s6)}
+.foot-row{display:flex;justify-content:space-between;align-items:center;gap:var(--s5);flex-wrap:wrap;font:500 .8125rem/1.4 var(--mono);letter-spacing:.04em;text-transform:uppercase;color:var(--on-ink-2)}
+.foot-row nav{display:flex;gap:var(--s5)}
+.foot-row nav a{display:inline-flex;align-items:center;min-height:2.75rem;color:var(--paper)}
+.foot-row nav a:hover{color:var(--signal)}
 
-.site-foot{border-top:1px solid var(--line);padding-block:var(--s6)}
-.foot-row{display:flex;justify-content:space-between;align-items:center;gap:var(--s5);flex-wrap:wrap;color:var(--muted);font-size:.9375rem}
-.foot-row nav{display:flex;gap:var(--s5)}.foot-row nav a:hover{color:var(--text)}
-
-/* admin + utility */
-.panel{background:var(--char);border:1px solid var(--line-2);border-radius:var(--r);padding:clamp(1.25rem,3vw,2rem)}
-.admin-grid{display:grid;grid-template-columns:minmax(0,18rem) minmax(0,1fr);gap:var(--s7);padding-block:var(--s7) var(--s8);align-items:start}
-.admin-side{position:sticky;top:calc(var(--bar) + var(--s5))}
-.admin-side h1{font-size:clamp(2.25rem,4vw,3.25rem);overflow-wrap:anywhere;line-height:.98;letter-spacing:-.03em;margin-bottom:var(--s5)}
-.admin-side p{color:var(--muted);margin-bottom:var(--s4);max-width:22em}
-.admin-side ul{list-style:none;margin:var(--s5) 0}
-.admin-side li{display:flex;align-items:center;justify-content:space-between;gap:var(--s3);padding:var(--s3) 0;border-top:1px solid var(--line-2);font-weight:600}
-.admin-side li:last-child{border-bottom:1px solid var(--line-2)}
+/* forms */
 fieldset{border:0;margin:0 0 var(--s7)}
-legend{font:700 1.5rem/1.1 var(--display);letter-spacing:-.02em;margin-bottom:var(--s4);padding:0}
-label{display:block;font-weight:600;margin:var(--s5) 0 var(--s2)}
-.hint{color:var(--muted);font-size:.9375rem;font-weight:400}
-input,textarea,select{width:100%;background:var(--void);color:var(--text);border:1px solid var(--line-2);border-radius:var(--r);padding:.8rem .9rem;font:inherit;font-size:1rem;transition:border-color .2s}
-input:hover,textarea:hover,select:hover{border-color:var(--muted)}
-input:focus,textarea:focus,select:focus{outline:2px solid var(--violet-text);outline-offset:2px;border-color:var(--violet)}
-select{color-scheme:dark}
+legend{font:800 1.75rem/1.1 var(--display);font-stretch:85%;letter-spacing:-.02em;margin-bottom:var(--s4);padding:0}
+label{display:block;font-weight:700;margin:var(--s5) 0 var(--s2)}
+.hint{color:var(--ink-2);font-size:.9375rem;font-weight:400}
+.contact .hint{color:var(--ink)}
+input,textarea,select{width:100%;background:var(--card);color:var(--ink);border:var(--rule) solid var(--ink);border-radius:var(--r);padding:.8rem .9rem;font:inherit;font-size:1rem;min-height:3rem;transition:background .2s,box-shadow .2s}
+input::placeholder,textarea::placeholder{color:#6b675d}
+input:hover,textarea:hover,select:hover{background:#fff}
+input:focus,textarea:focus,select:focus{outline:3px solid var(--ink);outline-offset:2px;background:#fff}
+select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--ink) 50%),linear-gradient(135deg,var(--ink) 50%,transparent 50%);background-position:calc(100% - 1.15rem) 55%,calc(100% - .8rem) 55%;background-size:.35rem .35rem;background-repeat:no-repeat;padding-right:2.5rem}
 textarea{min-height:12rem;resize:vertical;line-height:1.55}
+input[type=file]{padding:.6rem;font-size:.9375rem}
 .row{display:grid;grid-template-columns:1fr 1fr;gap:var(--s5)}
 .row label:first-child{margin-top:0}
-.msg{border-left:4px solid;padding:var(--s3) var(--s4);margin-bottom:var(--s5);font-weight:600;border-radius:var(--r)}
-.msg.ok{background:#0f2a1b;color:#86efac;border-color:var(--ok)}
-.msg.err{background:#331414;color:#fca5a5;border-color:var(--bad)}
-.gate{min-height:100vh;min-height:100svh;display:grid;place-items:center;padding:var(--gutter)}
-.gate>div{width:100%;max-width:26rem}
-.gate h1{font-size:clamp(2.25rem,8vw,3rem);line-height:1;margin-bottom:var(--s5)}
-.gate .mark{margin-bottom:var(--s5)}
-.gate .btn{margin-top:var(--s6);width:100%;justify-content:center}
-.gate p{margin-bottom:var(--s3);color:var(--muted)}.gate p strong{color:var(--text)}
-.lost{flex:1;display:flex;align-items:center}
-.lost h1{font-size:clamp(6rem,24vw,18rem);color:var(--violet)}
-.lost p{font-size:1.25rem;margin:var(--s5) 0 var(--s6);color:var(--muted)}
-
-/* updates, status page, media */
-.upd{list-style:none;border-top:1px solid var(--line-2)}
-.upd li{display:grid;grid-template-columns:10rem minmax(0,1fr);gap:var(--s4) var(--s6);padding:var(--s5) 0;border-bottom:1px solid var(--line-2)}
-.upd time{color:var(--muted)}
-.upd h3{font:700 1.375rem/1.25 var(--display);letter-spacing:-.02em;margin:0 0 var(--s2)}
-.upd .tag{display:inline-block;margin-right:var(--s2);color:var(--violet-text);font-weight:700}
-.upd p{color:var(--muted);max-width:40em;white-space:pre-wrap}
-.sum{display:flex;align-items:center;gap:var(--s3);font:700 clamp(1.25rem,2.4vw,1.75rem)/1.2 var(--display);letter-spacing:-.02em;padding:var(--s5) 0;border-block:1px solid var(--line-2)}
-.mgrid{display:grid;grid-template-columns:1fr 1fr;gap:var(--s7);margin-top:var(--s5)}
-.mgrid h2{font:700 1.5rem/1.1 var(--display);letter-spacing:-.02em;margin:0 0 var(--s4);max-width:none}
-.mgrid img{display:block;width:100%;aspect-ratio:16/10;object-fit:cover;object-position:top left;border:1px solid var(--line-2);border-radius:var(--r);margin-bottom:var(--s4)}
-.mgrid .none{display:grid;place-items:center;aspect-ratio:16/10;border:1px dashed var(--line-2);border-radius:var(--r);color:var(--muted);margin-bottom:var(--s4)}
-.mgrid input[type=file]{padding:.6rem}
-.mgrid form+form{margin-top:var(--s3)}
-.site-head.adm .wrap{gap:var(--s5)}
-/* banner + notes + contact form + inbox */
-.banner{background:var(--violet);color:var(--void);font-weight:600;text-align:center;padding:var(--s3) var(--gutter)}
-.p-note{margin-top:var(--s2);color:var(--text);font-weight:500;max-width:28em}
-.cform{margin-top:var(--s8);display:grid;grid-template-columns:1fr 1fr;gap:var(--s5) var(--s6);max-width:48rem}
-.cform h3{grid-column:1/-1;font:700 1.5rem/1.1 var(--display);letter-spacing:-.02em;margin:0}
+.msg{border:var(--rule) solid var(--ink);border-left-width:8px;padding:var(--s3) var(--s4);margin-bottom:var(--s5);font-weight:600;background:var(--card)}
+.msg.ok{border-left-color:var(--ok)}.msg.err{border-left-color:var(--bad)}
+.hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+.cform{margin-top:var(--s8);display:grid;grid-template-columns:1fr 1fr;gap:var(--s5) var(--s6);max-width:60rem}
+.cform h3{grid-column:1/-1;font:800 clamp(1.75rem,3vw,2.5rem)/1.1 var(--display);font-stretch:85%;letter-spacing:-.025em;margin:0}
 .cform label{margin:0 0 var(--s2)}
 .cform .full{grid-column:1/-1}
 .cform .btn{justify-self:start;margin:0}
-.hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
-.flash{grid-column:1/-1;margin:0}
-.flash.msg{margin-bottom:0}
-.mrow{border-top:1px solid var(--line-2);padding:var(--s5) 0;display:grid;grid-template-columns:minmax(0,14rem) minmax(0,1fr) auto;gap:var(--s4) var(--s6);align-items:start}
-.mrow:last-child{border-bottom:1px solid var(--line-2)}
-.mrow.unread .who{color:var(--text)}.mrow .who{color:var(--muted)}
-.mrow .who strong{display:block;color:var(--text);font-weight:700}
-.mrow .who a{color:var(--violet-text);overflow-wrap:anywhere}.mrow .who a:hover{text-decoration:underline}
+.contact .btn:hover{background:var(--paper);color:var(--ink)}
+.flash{grid-column:1/-1;margin:0}.flash.msg{margin-bottom:0}
+
+/* admin + utility */
+.panel{background:var(--card);border:var(--rule) solid var(--ink);padding:clamp(1.25rem,3vw,2rem)}
+.admin-grid{display:grid;grid-template-columns:minmax(0,19rem) minmax(0,1fr);gap:var(--s7) var(--s8);padding-block:var(--s7) var(--s8);align-items:start}
+.admin-side{position:sticky;top:calc(var(--bar) + var(--s5))}
+.admin-side h1{font-size:clamp(2.5rem,4.4vw,3.75rem);overflow-wrap:anywhere;line-height:.92;margin-bottom:var(--s5)}
+.admin-side p{margin-bottom:var(--s4);max-width:22em;color:var(--ink-2)}
+.admin-side ul{list-style:none;margin:var(--s5) 0;border-top:var(--rule) solid var(--ink)}
+.admin-side li{display:flex;align-items:center;justify-content:space-between;gap:var(--s3);padding:var(--s3) 0;border-bottom:var(--rule) solid var(--ink);font-weight:700}
+.site-head.adm .wrap{gap:var(--s5)}
+.admin-nav{display:flex;gap:var(--s5)}
+.admin-nav a{display:inline-flex;align-items:center;min-height:2.75rem;font:500 .8125rem/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);border-bottom:2px solid transparent;margin-bottom:-2px}
+.admin-nav a:hover{color:var(--ink)}.admin-nav a[aria-current]{color:var(--ink);border-color:var(--signal)}
+.badge{background:var(--signal);color:var(--ink);font:700 .75rem/1 var(--mono);padding:.2rem .4rem;margin-left:var(--s2);border:1px solid var(--ink)}
+.gate{min-height:100vh;min-height:100svh;display:grid;place-items:center;padding:var(--gutter)}
+.gate>div{width:100%;max-width:27rem}
+.gate .mark{margin-bottom:var(--s5)}
+.gate h1{font-size:clamp(2.75rem,10vw,4rem);line-height:.95;margin-bottom:var(--s5)}
+.gate .btn{margin-top:var(--s6);width:100%}
+.gate p{margin-bottom:var(--s3);color:var(--ink-2)}.gate p strong{color:var(--ink)}
+.lost{flex:1;display:flex;align-items:center;border-top:0}
+.lost h1{font-size:clamp(7rem,26vw,20rem);line-height:.8}
+.lost p{font-size:1.25rem;margin:var(--s5) 0 var(--s6);font-weight:500}
+.ops-top{display:flex;justify-content:space-between;align-items:end;gap:var(--s5);flex-wrap:wrap;padding-block:var(--s7) var(--s6);margin-bottom:var(--s2)}
+.ops-top h1{font-size:clamp(3rem,6vw,5.5rem);line-height:.9}
+.ops-top p{color:var(--ink-2);max-width:36em;margin-top:var(--s3)}
+.ops-sec{padding-bottom:var(--s8)}
+.ops-sec h2{font:800 1.75rem/1.1 var(--display);font-stretch:85%;letter-spacing:-.02em;margin:var(--s7) 0 var(--s3);max-width:none}
+.note{color:var(--ink-2)}
+.mrow{border-top:var(--rule) solid var(--ink);padding:var(--s5) 0;display:grid;grid-template-columns:minmax(0,15rem) minmax(0,1fr) auto;gap:var(--s4) var(--s6);align-items:start}
+.mrow:last-child{border-bottom:var(--rule) solid var(--ink)}
+.mrow .who{color:var(--ink-2);font-size:.9375rem}
+.mrow .who strong{display:block;color:var(--ink);font-weight:800;font-size:1.0625rem}
+.mrow .who a{color:var(--ink);text-decoration:underline;text-underline-offset:.2em;overflow-wrap:anywhere}
 .mrow .body{white-space:pre-wrap;overflow-wrap:anywhere;max-width:44em}
 .mrow .acts{display:flex;gap:var(--s2);flex-wrap:wrap}
-.dot{display:inline-block;width:.55rem;height:.55rem;border-radius:50%;background:var(--violet);margin-right:var(--s2)}
-.badge{background:var(--violet);color:var(--void);border-radius:99px;font-size:.8125rem;padding:.05rem .45rem;margin-left:var(--s2)}
-.btn.danger:hover{background:var(--bad);border-color:var(--bad);color:var(--void)}
-/* monitor */
-.admin-nav{display:flex;gap:var(--s5)}
-.admin-nav a{padding:var(--s2) 0;font-weight:600;color:var(--muted);border-bottom:1px solid transparent}
-.admin-nav a:hover{color:var(--text)}.admin-nav a[aria-current]{color:var(--text);border-color:var(--violet)}
-.ops-top{display:flex;justify-content:space-between;align-items:end;gap:var(--s5);flex-wrap:wrap;padding-block:var(--s7) var(--s6)}
-.ops-top h1{font-size:clamp(2.5rem,5vw,4rem);line-height:.95;letter-spacing:-.04em}
-.ops-top p{color:var(--muted);max-width:34em;margin-top:var(--s3)}
-.ops-top .btn{margin:0}
-.svc{border-top:1px solid var(--line-2);padding:var(--s5) 0;display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,.8fr) minmax(0,1.4fr);gap:var(--s4) var(--s6);align-items:center}
-.svc:last-of-type{border-bottom:1px solid var(--line-2)}
-.svc h2{font:700 1.5rem/1.1 var(--display);letter-spacing:-.02em;max-width:none}
-.svc h2 a:hover{color:var(--violet-text)}
-.svc .url{color:var(--muted);font-size:.9375rem;overflow-wrap:anywhere}
-.stats{display:grid;grid-template-columns:repeat(3,auto);gap:var(--s4);justify-content:start}
-.stats dt{color:var(--muted);font-size:.875rem}.stats dd{font:700 1.125rem/1.3 var(--display)}
-.strip{display:flex;align-items:flex-end;justify-content:flex-end;gap:2px;height:2rem}
-.strip i{flex:1 1 0;max-width:14px;min-width:2px;height:100%;background:var(--ok);border-radius:1px}
-.strip i.bad{height:35%;background:var(--bad)}.strip i.none{height:12%;background:var(--line-2)}
-.strip-cap{color:var(--muted);font-size:.8125rem;margin-top:var(--s1)}
+.mrow:not(.unread){color:var(--ink-2)}
+.dot{display:inline-block;width:.6rem;height:.6rem;background:var(--signal);border:1px solid var(--ink);border-radius:50%;margin-right:var(--s2)}
+.btn.danger:hover{background:var(--bad);border-color:var(--bad);color:var(--paper)}
+.svc{border-top:var(--rule) solid var(--ink);padding:var(--s5) 0;display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,.8fr) minmax(0,1.4fr);gap:var(--s4) var(--s6);align-items:center}
+.svc:last-of-type{border-bottom:var(--rule) solid var(--ink)}
+.svc h2{font:800 clamp(1.75rem,3vw,2.5rem)/1 var(--display);font-stretch:82%;letter-spacing:-.03em;max-width:none;margin:0}
+.svc h2 a:hover{text-decoration:underline;text-underline-offset:.15em}
+.svc .url{color:var(--ink-2);font:500 .8125rem var(--mono);overflow-wrap:anywhere;margin-top:var(--s1)}
+.stats{display:grid;grid-template-columns:repeat(3,auto);gap:var(--s5);justify-content:start}
+.stats dt{font:500 .75rem var(--mono);letter-spacing:.05em;text-transform:uppercase;color:var(--ink-2)}
+.stats dd{font:800 1.5rem/1.2 var(--display);font-stretch:85%;font-variant-numeric:tabular-nums}
+.strip{display:flex;align-items:flex-end;justify-content:flex-start;gap:2px;height:2.5rem}
+.strip i{flex:1 1 0;min-width:2px;height:100%;background:var(--ok)}
+.strip i.bad{height:38%;background:var(--bad)}.strip i.none{height:12%;background:var(--hair)}
+.strip-cap{color:var(--ink-2);font:500 .75rem var(--mono);letter-spacing:.04em;text-transform:uppercase;margin-top:var(--s2)}
 .ctl{grid-column:1/-1;display:flex;align-items:center;gap:var(--s3);flex-wrap:wrap}
-.ctl>span{color:var(--muted);font-size:.9375rem;margin-right:var(--s2)}
-.seg{display:inline-flex;border:1px solid var(--line-2);border-radius:var(--r);overflow:hidden}
-.seg button{background:transparent;color:var(--text);border:0;border-right:1px solid var(--line-2);padding:.55rem .9rem;font:600 .9375rem var(--body);cursor:pointer;transition:background .2s}
+.ctl>span{color:var(--ink-2);font-size:.9375rem;margin-right:var(--s2)}
+.seg{display:inline-flex;flex-wrap:wrap;border:var(--rule) solid var(--ink)}
+.seg button{background:var(--card);color:var(--ink);border:0;border-right:var(--rule) solid var(--ink);min-height:2.75rem;padding:.55rem 1rem;font:700 .9375rem var(--body);cursor:pointer;transition:background .2s}
 .seg button:last-child{border-right:0}
-.seg button:hover{background:var(--raised)}
-.seg button[aria-pressed=true]{background:var(--violet);color:var(--void)}
-.inc{list-style:none;margin-top:var(--s4)}
-.inc li{display:grid;grid-template-columns:11rem 1fr;gap:var(--s4);border-top:1px solid var(--line);padding:var(--s3) 0}
-.inc li:last-child{border-bottom:1px solid var(--line)}
-.inc time{color:var(--muted)}
-.ops-sec{padding-bottom:var(--s8)}
-.ops-sec h2{font:700 1.5rem/1.1 var(--display);letter-spacing:-.02em;margin:var(--s7) 0 var(--s2);max-width:none}
-.skgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,16rem),1fr));gap:var(--s4)}.sk{min-width:0;overflow:hidden}.sk h3{margin:0 0 var(--s1);font:700 1.1rem/1.25 var(--display);letter-spacing:-.01em;overflow-wrap:anywhere}.sk .hint{margin:0 0 var(--s2);font-size:.78rem;overflow-wrap:anywhere}.sk input[type=file]{width:100%;max-width:100%;min-width:0;font-size:.8rem}.sk img{max-width:100%;height:auto}
-.chk{display:inline-flex;align-items:center;gap:.4rem;margin:.25rem 1rem .25rem 0;font-weight:500}.chk input{width:auto;margin:0}
-.note{color:var(--muted)}
-@media(max-width:62rem){
-.site-head.adm{height:auto}.site-head.adm .wrap{flex-wrap:wrap;padding-block:var(--s3)}.admin-nav{order:3;width:100%;overflow-x:auto;gap:var(--s5)}.upd li{grid-template-columns:1fr;gap:var(--s1)}.mgrid{grid-template-columns:1fr}
-.mrow{grid-template-columns:1fr}.cform{grid-template-columns:1fr}
-.svc{grid-template-columns:1fr}.inc li{grid-template-columns:1fr;gap:var(--s1)}
+.seg button:hover{background:var(--paper-2)}
+.seg button[aria-pressed=true]{background:var(--ink);color:var(--paper)}
+.inc{list-style:none;margin-top:var(--s3);border-top:var(--rule) solid var(--ink)}
+.inc li{display:grid;grid-template-columns:12rem 1fr;gap:var(--s4);border-bottom:1px solid var(--hair);padding:var(--s3) 0;font-weight:600}
+.inc time{font:500 .8125rem var(--mono);color:var(--ink-2);letter-spacing:.03em;text-transform:uppercase}
+.sum{display:flex;align-items:center;gap:var(--s4);font:800 clamp(1.5rem,3.2vw,2.5rem)/1.1 var(--display);font-stretch:85%;letter-spacing:-.025em;padding:var(--s5) 0;border-top:var(--rule) solid var(--ink);margin-bottom:var(--s6)}
+.sum .st{font-size:.9375rem}
+.stat-top{padding-block:var(--s8) var(--s9)}
+.stat-top h1{margin-bottom:var(--s6)}
+.mgrid{display:grid;grid-template-columns:1fr 1fr;gap:var(--s7);margin-top:var(--s5)}
+.mgrid h2{font:800 1.75rem/1.1 var(--display);font-stretch:85%;letter-spacing:-.02em;margin:0 0 var(--s4);max-width:none}
+.mgrid img{display:block;width:100%;aspect-ratio:16/10;object-fit:cover;object-position:top left;border:var(--rule) solid var(--ink);margin-bottom:var(--s4)}
+.mgrid .none{display:grid;place-items:center;aspect-ratio:16/10;border:var(--rule) dashed var(--ink);color:var(--ink-2);margin-bottom:var(--s4)}
+.mgrid form+form{margin-top:var(--s3)}
 
-.project-in,.project.flip .project-in,.about-in{grid-template-columns:1fr}
-.project.flip .p-copy{order:0}
-.p-copy{position:static}
-.hero-in{grid-template-columns:1fr;align-items:start}
-h1{font-size:clamp(2.6rem,12.5vw,7rem)}
-.shot::before,.flip .shot::before{transform:translate(8px,8px)}
-.admin-grid{grid-template-columns:1fr}.admin-side{position:static}
+@media(max-width:62rem){
+.site-head.adm{height:auto}.site-head.adm .wrap{flex-wrap:wrap;padding-block:var(--s2)}.admin-nav{order:3;width:100%;overflow-x:auto;gap:var(--s5)}
+.hero-in,.sec-head,.project-in,.project.flip .project-in,.about-in,.contact-top,.admin-grid,.mgrid{grid-template-columns:1fr}
+.project.flip .p-copy{order:0}.p-copy,.admin-side{position:static}
+.dial{justify-self:start;width:min(100%,19rem)}
+.board a{grid-template-columns:2.5rem minmax(0,1fr) auto 2rem}.board .what{display:none}
+.upd li{grid-template-columns:8.5rem minmax(0,1fr);gap:var(--s2) var(--s5)}.upd li>div{grid-column:1/-1}
+.mrow,.cform,.svc,.inc li{grid-template-columns:1fr}.inc li{gap:var(--s1)}
+.clock{display:none}
 }
 @media(max-width:40rem){
-:root{--bar:4rem}
-.site-head nav{gap:var(--s4)}
-.t-art{aspect-ratio:4/3}.t-cap{padding:var(--s3)}.t-cap .nm{font-size:1.25rem}
-.focus li,.feats li{grid-template-columns:1fr;gap:var(--s1)}
-.row{grid-template-columns:1fr}
+:root{--bar:3.75rem}
+.mark span{display:none}
+.head-r{gap:var(--s4)}.site-head nav{gap:var(--s4)}
+.meta>*{margin-right:var(--s4);padding-right:0;font-size:.6875rem}.meta a{margin-left:0}
+.board a{grid-template-columns:minmax(0,1fr) auto;gap:var(--s2) var(--s4);padding:var(--s4) 0}.board .idx,.board .go{display:none}
+.feats li{grid-template-columns:7rem 1fr;gap:var(--s3)}.focus li{grid-template-columns:1fr;gap:var(--s1)}.focus li::before{display:none}
+h1{font-size:clamp(3rem,13.5vw,4.5rem)}
+.row,.stats{grid-template-columns:1fr}
 .links small{display:none}
-.foot-row{flex-direction:column;align-items:flex-start}
+.upd li{grid-template-columns:1fr}
+.foot-row{flex-direction:column;align-items:flex-start;gap:var(--s2)}
+.p-top{font-size:.6875rem}
 }
 """
 
 HEAD = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>{meta}
-<meta name="theme-color" content="#0b0b0f">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230b0b0f'/><circle cx='50' cy='50' r='34' fill='none' stroke='%238f6bff' stroke-width='6'/><circle cx='50' cy='16' r='9' fill='%238f6bff'/></svg>">
+<meta name="theme-color" content="#eeeae0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'><rect width='28' height='28' fill='%2312110e'/><circle cx='14' cy='14' r='8' fill='%23eeeae0'/><rect x='17' y='5' width='6' height='6' fill='%23ff4d1a'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Schibsted+Grotesk:wght@600..800&display=swap" rel="stylesheet">
-<style>{css}</style><script src="/app.js"></script></head>"""
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>{css}</style><script src="/app.js" defer></script></head>"""
 
 E = html.escape
 
-LOGO = ('<svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="11" fill="none" stroke="#8f6bff" stroke-width="2"/>'
-        '<circle cx="14" cy="3" r="3" fill="#8f6bff"/></svg>')
+LOGO = ('<svg viewBox="0 0 28 28" aria-hidden="true"><rect width="28" height="28" fill="#12110e"/>'
+        '<circle cx="14" cy="14" r="8" fill="#eeeae0"/><rect x="17" y="5" width="6" height="6" fill="#ff4d1a"/></svg>')
 ARROW = ('<svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square">'
          '<path d="M5 15 15 5M7 5h8v8"/></svg>')
+SQ = '<i class="sq" aria-hidden="true"></i>'
 
 _P = ("1111100", "1000010", "1000010", "1111100", "1000000", "1000000", "1000000")
 PIXEL_ART = '<div class="mark-art"><div class="px">' + "".join(
     f'<b class="{"on" if c == "1" else ""}"></b>' for row in _P for c in row) + "</div></div>"
 DONUT_ART = ('<div class="mark-art"><svg viewBox="0 0 200 200" aria-hidden="true" fill="none">'
-             '<circle cx="100" cy="100" r="92" stroke="#3a3a46"/><circle cx="100" cy="100" r="62" stroke="#8f6bff" stroke-width="34"/>'
-             '<circle cx="100" cy="100" r="26" stroke="#3a3a46"/></svg></div>')
+             '<circle cx="100" cy="100" r="92" stroke="#5b574d"/><circle cx="100" cy="100" r="62" stroke="#f5a524" stroke-width="34"/>'
+             '<circle cx="100" cy="100" r="26" stroke="#5b574d"/></svg></div>')
 
-TILE_DONUT = DONUT_ART.replace('class="mark-art"', 'style="display:contents"')
-TILE_PIXEL = PIXEL_ART.replace('class="mark-art"', 'style="display:contents"')
+ACCENT = {"donut": "pc-donut", "pixel": "pc-pixel"}
 
-# Served at /app.js: flags JS early, then reveals project screenshots once as they scroll into view.
+
+def dial_html():
+    """Instrument dial showing server time (UTC). Hands are set here so it is right without JS; app.js keeps it ticking."""
+    t = time.gmtime()
+    hr, mn, sc = ((t.tm_hour % 12) + t.tm_min / 60) * 30, (t.tm_min + t.tm_sec / 60) * 6, t.tm_sec * 6
+    ticks = ""
+    for i in range(60):
+        major = i % 5 == 0
+        r1, r2 = (80, 92) if major else (87, 92)
+        a = math.radians(i * 6)
+        x1, y1 = 100 + r1 * math.sin(a), 100 - r1 * math.cos(a)
+        x2, y2 = 100 + r2 * math.sin(a), 100 - r2 * math.cos(a)
+        ticks += f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" stroke-width="{2.4 if major else 1}"/>'
+    return (
+        '<div class="dial"><svg viewBox="0 0 200 200" role="img" aria-label="Clock showing server time in UTC" fill="none" stroke="#12110e">'
+        '<circle cx="100" cy="100" r="97" stroke-width="1.5"/>' + ticks +
+        f'<g class="hand" id="h-hr" style="transform:rotate({hr:.1f}deg)"><line x1="100" y1="106" x2="100" y2="56" stroke-width="5"/></g>'
+        f'<g class="hand" id="h-min" style="transform:rotate({mn:.1f}deg)"><line x1="100" y1="106" x2="100" y2="30" stroke-width="3"/></g>'
+        f'<g class="hand" id="h-sec" style="transform:rotate({sc}deg)" stroke="#ff4d1a"><line x1="100" y1="118" x2="100" y2="18" stroke-width="1.6"/>'
+        '<rect x="96" y="12" width="8" height="8" fill="#ff4d1a" stroke="none"/></g>'
+        '<circle cx="100" cy="100" r="5.5" fill="#12110e" stroke="none"/></svg>'
+        f'<p class="dial-cap"><span>Server time</span><b data-utc>{time.strftime("%H:%M:%S", t)}</b><span>UTC</span></p></div>'
+    )
+
+
+# Served at /app.js: flags JS, reveals sections on scroll, keeps the UTC dial ticking.
 SCRIPT = r"""
 (function () {
   "use strict";
-  document.documentElement.classList.add("js");
+  var root = document.documentElement;
+  root.classList.add("js");
+  function two(n) { return (n < 10 ? "0" : "") + n; }
+  function tick() {
+    var d = new Date(), h = d.getUTCHours(), m = d.getUTCMinutes(), s = d.getUTCSeconds();
+    var txt = two(h) + ":" + two(m) + ":" + two(s);
+    [].forEach.call(document.querySelectorAll("[data-utc]"), function (el) { el.textContent = txt; });
+    [].forEach.call(document.querySelectorAll("[data-utc-short]"), function (el) { el.textContent = two(h) + ":" + two(m) + " UTC"; });
+    var set = function (id, deg) { var el = document.getElementById(id); if (el) el.style.transform = "rotate(" + deg + "deg)"; };
+    set("h-hr", ((h % 12) + m / 60) * 30);
+    set("h-min", (m + s / 60) * 6);
+    set("h-sec", s * 6);
+  }
+  document.addEventListener("submit", function (e) {
+    var f = e.target;
+    if (f.querySelector && f.querySelector("button.danger") && !window.confirm("Delete this? This cannot be undone.")) e.preventDefault();
+  });
   document.addEventListener("DOMContentLoaded", function () {
-    var shots = [].slice.call(document.querySelectorAll(".shot"));
-    if (!shots.length) return;
+    tick();
+    var still = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    setInterval(tick, still ? 30000 : 1000);
+    var items = [].slice.call(document.querySelectorAll(".rv"));
+    if (!items.length) return;
     function show(el) { el.classList.add("in"); }
-    if (!("IntersectionObserver" in window)) { shots.forEach(show); return; }
+    if (!("IntersectionObserver" in window)) { items.forEach(show); return; }
     var io = new IntersectionObserver(function (entries) {
       entries.forEach(function (e) { if (e.isIntersecting) { show(e.target); io.unobserve(e.target); } });
-    }, { threshold: 0.15 });
-    shots.forEach(function (s) { io.observe(s); });
-    setTimeout(function () { shots.forEach(show); }, 6000);
+    }, { threshold: 0.12 });
+    items.forEach(function (s) { io.observe(s); });
+    setTimeout(function () { items.forEach(show); }, 6000);
   });
 })();
 """
@@ -859,14 +787,6 @@ def shot_file(key):
         if os.path.isfile(os.path.join(SHOTS_DIR, key + ext)):
             return key + ext
     return None
-
-
-def tile(key, name, status, fallback):
-    u = shot_url(key)
-    art = f'<img src="{u}" alt="" loading="eager" decoding="async">' if u else fallback
-    return (f'<a class="tile" href="#{key}" aria-label="{name}, {E(PUBLIC_LABEL[status])}. Jump to project">'
-            f'<div class="t-art" aria-hidden="true">{art}</div>'
-            f'<div class="t-cap"><span class="nm">{name}</span>{status_html(status)}</div></a>')
 
 
 def shot_url(key):
@@ -887,25 +807,43 @@ def status_html(status):
 def project(key, flip, url, host, fallback, name, status, desc, chips, note=""):
     feats = "".join(f"<li>{E(n)}<span>{E(d)}</span></li>" for n, d in chips)
     u = shot_url(key)
+    idx = {"donut": "01", "pixel": "02"}.get(key, "")
+    kind = {"donut": "Minecraft account bot", "pixel": "Community management bot"}.get(key, "Project")
     if u:
         art = (f'<a class="shot" href="{url}" aria-label="Open the {name} dashboard">'
-               f'<img src="{u}" alt="{name} dashboard" loading="lazy" decoding="async"></a>')
+               f'<img src="{u}" alt="{name} dashboard" loading="lazy" decoding="async" width="1600" height="1000"></a>')
     else:
         art = f'<div class="shot" aria-hidden="true">{fallback}</div>'
     return (
-        f'<article class="project{" flip" if flip else ""}" id="{key}"><div class="wrap project-in"><div class="p-copy">'
-        f'{status_html(status)}{f"<p class=p-note>{E(note)}</p>" if note else ""}<h3>{name}</h3><p class="desc">{desc}</p><ul class="feats" aria-label="{name} features">{feats}</ul>'
+        f'<article class="project {ACCENT.get(key, "")}{" flip" if flip else ""}" id="{key}">'
+        f'<div class="wrap"><div class="p-top mono"><span>{idx} / {kind}</span>{status_html(status)}</div>'
+        f'<div class="project-in"><div class="p-copy">'
+        f'<h3>{name}{SQ}</h3><p class="desc">{desc}</p>{f"<p class=p-note>{E(note)}</p>" if note else ""}'
+        f'<ul class="feats" aria-label="{name} features">{feats}</ul>'
         f'<div class="cta"><a class="btn" href="{url}">Open dashboard{ARROW}</a><span class="host">{host}</span></div></div>'
-        f'<div class="p-art">{art}</div></div></article>'
+        f'<div class="slab rv">{art}<div class="slab-cap mono"><span>Dashboard</span><span>{host}</span></div></div></div></div></article>'
+    )
+
+
+def site_head(nav):
+    return (
+        f'<header class="site-head"><div class="wrap"><a class="mark" href="/" aria-label="Void Labs home">{LOGO}<span>Void Labs</span></a>'
+        f'<div class="head-r"><nav aria-label="Page sections">{nav}</nav>'
+        f'<span class="clock" aria-hidden="true"><span data-utc-short>{time.strftime("%H:%M", time.gmtime())} UTC</span></span></div></div></header>'
+    )
+
+
+def site_foot(nav):
+    return (
+        '<footer class="site-foot"><div class="wrap foot-row">'
+        f'<span>&copy; {time.gmtime().tm_year} Void Labs. Built in the void.</span><nav aria-label="Footer">{nav}</nav></div></footer>'
     )
 
 
 def page_shell(nav, body, foot, banner=""):
     b = f'<div class="banner" role="status">{E(banner)}</div>' if banner else ""
     return (
-        '<body><a class="skip" href="#top">Skip to content</a>' + b +
-        f'<header class="site-head"><div class="wrap"><a class="mark" href="/" aria-label="Void Labs home">{LOGO}Void Labs</a>'
-        f'<nav aria-label="Page sections">{nav}</nav></div></header>'
+        '<body><a class="skip" href="#top">Skip to content</a>' + b + site_head(nav) +
         f'<main id="top">{body}</main>{foot}</body></html>'
     )
 
@@ -913,7 +851,6 @@ def page_shell(nav, body, foot, banner=""):
 def home_page(s, notice=""):
     s = effective(s)
     paras = "".join(f"<p>{E(p.strip())}</p>" for p in s["about"].split("\n\n") if p.strip())
-    has_contact = bool(s["email"] or s["discord"])
     links = ""
     if s["email"]:
         links += f'<a href="mailto:{E(s["email"])}"><span>{E(s["email"])}</span><small>Email</small></a>'
@@ -935,7 +872,14 @@ def home_page(s, notice=""):
     )
     has_upd = bool(UPDATES)
     nav = '<a href="#projects">Work</a>' + ('<a href="#updates">Updates</a>' if has_upd else "") + '<a href="#about">About</a><a href="#contact">Contact</a>'
-    tiles = (tile("donut", "Donut", s["donut_status"], TILE_DONUT) + tile("pixel", "Pixel", s["pixel_status"], TILE_PIXEL))
+    board = "".join(
+        f'<a class="{ACCENT[k]}" href="#{k}" aria-label="{n}, {E(PUBLIC_LABEL[s[k + "_status"]])}. Jump to project">'
+        f'<span class="idx">{i}</span><span class="nm">{n}</span><span class="what">{w}</span>'
+        f'{status_html(s[k + "_status"])}<svg class="go" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><path d="M10 3v14M4 11l6 6 6-6"/></svg></a>'
+        for i, k, n, w in (("01", "donut", "Donut", "Keeps a Minecraft account online."), ("02", "pixel", "Pixel", "Runs a Discord community."))
+    )
+    bad = [k for k in ("donut", "pixel") if s[k + "_status"] != "online"]
+    summary = "All systems running" if not bad else "Something is not online"
     flash = {"sent": '<p class="flash msg ok" role="status">Sent. Thanks, I&rsquo;ll get back to you.</p>',
              "err1": '<p class="flash msg err" role="alert">Add a way to reach you and a message (up to 1000 characters).</p>',
              "err2": '<p class="flash msg err" role="alert">Too many messages for now. Try again in an hour.</p>',
@@ -943,7 +887,7 @@ def home_page(s, notice=""):
     tok = str(int(time.time()))
     tok += "." + _sig("f" + tok)
     form = (
-        '<form class="cform" method="post" action="/contact"><h3>Or send a message</h3>' + flash +
+        '<form class="cform" id="message" method="post" action="/contact"><h3>Or send a message</h3>' + flash +
         f'<input type="hidden" name="t" value="{tok}">'
         '<div class="hp" aria-hidden="true"><label>Leave empty<input name="website" tabindex="-1" autocomplete="off"></label></div>'
         '<div><label for="cn">Name <span class="hint">(optional)</span></label><input id="cn" name="name" maxlength="60" autocomplete="name"></div>'
@@ -952,31 +896,35 @@ def home_page(s, notice=""):
         '<button class="btn" type="submit">Send message</button></form>'
     )
     contact = (
-        '<section class="contact" id="contact"><div class="wrap contact-in"><h2>Say hello.</h2><p class="sub">Questions, bug reports or an idea for a bot. Email, Discord or the form below.</p>'
-        f'<div class="links">{links}</div>{form}</div></section>'
+        '<section class="contact" id="contact"><div class="wrap contact-in"><div class="contact-top"><div>'
+        f'<h2>Say hello{SQ}</h2><p class="sub">Questions, bug reports or an idea for a bot. Email, Discord or the form below.</p></div>'
+        f'<div class="links">{links}</div></div>{form}</div></section>'
     )
-    foot_nav = '<a href="#projects">Work</a><a href="#about">About</a><a href="#contact">Contact</a><a href="/status">Status</a>'
+    foot = site_foot('<a href="#projects">Work</a><a href="#about">About</a><a href="#contact">Contact</a><a href="/status">Status</a>')
     body = (
-        '<section class="hero"><div class="wrap hero-in"><div><h1><span class="ln"><span>Bots and</span></span>'
-        '<span class="ln"><span>dashboards,</span></span><span class="ln"><span>built right.</span></span></h1>'
-        '<p class="lede"><b>Void Labs is a one-person studio.</b> I design, build and run Discord bots and the dashboards behind them.</p></div>'
-        f'<div class="tiles" aria-label="Products and their status">{tiles}</div></div></section>'
-        '<section id="projects"><div class="wrap sec-head"><h2>Donut and Pixel.</h2>'
+        '<section class="hero"><div class="wrap">'
+        f'<div class="meta mono"><span>Software studio</span><span>Discord bots + dashboards</span><span>One person</span><a href="/status">{summary}</a></div>'
+        '<div class="hero-in"><div><h1><span class="ln"><span>Bots and</span></span><span class="ln"><span>dashboards,</span></span>'
+        f'<span class="ln"><span>built right{SQ}</span></span></h1>'
+        '<p class="lede"><b>Void Labs is a one-person studio.</b> I design, build and run Discord bots and the dashboards behind them.</p>'
+        '<div class="hero-cta"><a class="btn" href="#projects">See the work</a><a class="btn ghost" href="#contact">Get in touch</a></div></div>'
+        f'{dial_html()}</div>'
+        f'<nav class="board" aria-label="Products and their status">{board}</nav></div></section>'
+        '<section id="projects"><div class="wrap sec-head">'
+        f'<h2>Donut and Pixel{SQ}</h2>'
         '<p>Two Discord bots, each with its own web dashboard. Built, hosted and maintained by me.</p></div>'
         f'{donut}{pixel}</section>'
         f'{updates_html()}'
-        '<section class="about" id="about"><div class="wrap about-in"><h2>About</h2><div>'
+        '<section class="about" id="about"><div class="wrap about-in"><div>'
+        '<h2 class="kicker">About</h2>'
         '<p class="statement">One developer, one studio, and software I&rsquo;m happy to keep running.</p>'
+        f'<div class="bio"><h3>Hi, I&rsquo;m {E(s["name"])}.</h3>{paras}</div></div>'
         '<ul class="focus"><li><strong>Software</strong><span>Written, hosted and maintained by me.</span></li>'
         '<li><strong>Discord bots</strong><span>Moderation, tickets, giveaways, applications.</span></li>'
         '<li><strong>Dashboards</strong><span>The web side of every bot: stats, logs, staff controls.</span></li>'
         '<li><strong>Automation</strong><span>The repetitive parts of running a community, handled.</span></li></ul>'
-        f'<div class="bio"><h3>Hi, I&rsquo;m {E(s["name"])}.</h3>{paras}</div></div></div></section>'
+        '</div></section>'
         f'{contact}'
-    )
-    foot = (
-        '<footer class="site-foot"><div class="wrap foot-row">'
-        f'<span>&copy; {time.gmtime().tm_year} Void Labs. Built in the void.</span><nav aria-label="Footer">{foot_nav}</nav></div></footer>'
     )
     return HEAD.format(title="Void Labs | Bots and dashboards", css=CSS, meta='<meta name="description" content="Void Labs is a one-person software studio. Discord bots and web dashboards, including Donut and Pixel.">') + page_shell(nav, body, foot, s["banner"])
 
@@ -984,7 +932,7 @@ def home_page(s, notice=""):
 def admin_login_page(msg=""):
     m = f'<div class="msg err" role="alert">{E(msg)}</div>' if msg else ""
     body = (
-        f'<body><main class="gate"><div><a class="mark" href="/">{LOGO}Void Labs</a><div class="panel"><h1>Admin</h1>'
+        f'<body><main class="gate"><div><a class="mark" href="/">{LOGO}<span>Void Labs</span></a><div class="panel"><h1>Admin</h1>'
         f'{m}<form method="post" action="/admin/login" autocomplete="on">'
         '<label for="u" style="margin-top:0">Username</label><input id="u" name="username" autocomplete="username" required>'
         '<label for="p">Password</label><input id="p" name="password" type="password" autocomplete="current-password" required>'
@@ -994,18 +942,12 @@ def admin_login_page(msg=""):
 
 
 def admin_head(csrf, active):
-    unread = unread_count() if can("inbox") else 0
+    unread = unread_count()
     badge = f'<span class="badge" aria-label="{unread} unread">{unread}</span>' if unread else ""
-    links = ""
-    for k, label in ADMIN_TABS:
-        if can(k):
-            cur = ' aria-current="page"' if active == k else ""
-            links += f'<a href="{TAB_HREF[k]}"{cur}>{label}{badge if k == "inbox" else ""}</a>'
-    if is_owner():
-        links += f'<a href="/admin/users"{' aria-current="page"' if active == "users" else ""}>Users</a>'
+    cur = lambda n: ' aria-current="page"' if active == n else ""
     return (
-        f'<header class="site-head adm"><div class="wrap"><a class="mark" href="/">{LOGO}View site</a>'
-        f'<nav class="admin-nav" aria-label="Admin">{links}</nav>'
+        f'<header class="site-head adm"><div class="wrap"><a class="mark" href="/">{LOGO}<span>View site</span></a>'
+        f'<nav class="admin-nav" aria-label="Admin"><a href="/admin"{cur("settings")}>Settings</a><a href="/admin/ops"{cur("monitor")}>Monitor</a><a href="/admin/inbox"{cur("inbox")}>Inbox{badge}</a><a href="/admin/updates"{cur("updates")}>Updates</a><a href="/admin/media"{cur("media")}>Media</a></nav>'
         f'<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{csrf}">'
         '<button class="btn ghost sm" type="submit">Log out</button></form></div></header>'
     )
@@ -1023,7 +965,7 @@ def admin_page(s, csrf, msg="", kind="ok"):
         '<body><a class="skip" href="#top">Skip to content</a>'
         + admin_head(csrf, "settings") +
         '<main id="top"><div class="wrap admin-grid">'
-        f'<aside class="admin-side"><h1>Site settings</h1><p>Edits appear on the public site as soon as you save.</p><ul aria-label="Current status">{live}</ul>{'<a class="btn ghost sm" href="/admin/backup">Download backup</a>' if is_owner() else ''}</aside>'
+        f'<aside class="admin-side"><h1>Site settings</h1><p>Edits appear on the public site as soon as you save.</p><ul aria-label="Current status">{live}</ul><a class="btn ghost sm" href="/admin/backup">Download backup</a></aside>'
         f'<div>{m}<form method="post" action="/admin/save"><input type="hidden" name="csrf" value="{csrf}">'
         '<fieldset><legend>Product status</legend><div class="row"><div><label for="ds">Donut status</label>'
         f'<select id="ds" name="donut_status">{opts(s["donut_status"])}</select></div>'
@@ -1091,9 +1033,9 @@ def updates_html(limit=5):
         tag_html = '<span class="tag">' + E(tag) + "</span>" if tag else ""
         text_html = "<p>" + E(u.get("text", "")) + "</p>" if u.get("text") else ""
         rows += ('<li><time datetime="' + time.strftime("%Y-%m-%d", time.gmtime(t)) + '">' + E(time.strftime("%d %b %Y", time.gmtime(t))) + "</time>"
-                 "<div><h3>" + tag_html + E(u["title"]) + "</h3>" + text_html + "</div></li>")
-    return (f'<section id="updates"><div class="wrap sec-head"><h2>Updates.</h2><p>What changed lately, newest first.</p></div>'
-            f'<div class="wrap" style="padding-bottom:var(--s9)"><ul class="upd">{rows}</ul></div></section>')
+                 "<span>" + tag_html + "</span><div><h3>" + E(u["title"]) + "</h3>" + text_html + "</div></li>")
+    return ('<section id="updates" class="on-ink updates-sec"><div class="wrap sec-head"><h2>Updates' + SQ + '</h2><p>What changed lately, newest first.</p></div>'
+            f'<div class="wrap"><ul class="upd">{rows}</ul></div></section>')
 
 
 def status_page(s):
@@ -1101,7 +1043,7 @@ def status_page(s):
     with _mlock:
         snap = {k: (list(v["hist"]), v["state"]) for k, v in MON.items()}
         inc = [i for i in INCIDENTS if i["key"] in ("donut", "pixel")][:10]
-    rows, bad, unknown = "", 0, 0
+    rows, bad, unknown, states = "", 0, 0, []
     for key, name in (("donut", "Donut"), ("pixel", "Pixel")):
         hist, state = snap[key]
         manual = eff[key + "_status"]
@@ -1111,6 +1053,7 @@ def status_page(s):
             shown = "offline"
         else:
             shown = "online"
+        states.append(shown)
         if shown != "online":
             bad += 1
         if state is None and manual == "online":
@@ -1131,18 +1074,16 @@ def status_page(s):
         f'<li><time>{E(time.strftime("%d %b, %H:%M UTC", time.gmtime(i["t"])))}</time><span>{names[i["key"]]} {"recovered" if i["ok"] else "went down"}</span></li>'
         for i in inc) + '</ul>') if inc else '<p class="note">No incidents recorded.</p>'
     if bad == 0:
-        head = f'{status_html("online")}' if not unknown else '<span class="st st-maintenance" style="color:var(--muted)">Checking</span>'
+        head = status_html("online") if not unknown else '<span class="st st-maintenance">Checking</span>'
         line = "Everything is running." if not unknown else "Waiting for the first checks."
     else:
-        head = status_html("maintenance" if all(eff[k + "_status"] == "maintenance" for k in ("donut", "pixel")) else "offline")
+        head = status_html("offline" if "offline" in states else "maintenance")
         line = "Something needs attention. Details below."
     body = (
-        '<section><div class="wrap" style="padding-block:var(--s8) var(--s9)"><h1 style="font-size:clamp(2.6rem,7vw,6rem);letter-spacing:-.045em;line-height:.95;margin-bottom:var(--s6)">Status</h1>'
-        f'<div class="sum">{line}</div><div>{rows}</div><div class="ops-sec"><h2>Incidents</h2>{incs}</div></div></section>')
-    foot = ('<footer class="site-foot"><div class="wrap foot-row"><span>&copy; ' + str(time.gmtime().tm_year) +
-            ' Void Labs. Built in the void.</span><nav aria-label="Footer"><a href="/">Home</a></nav></div></footer>')
-    nav = '<a href="/">Home</a>'
-    return HEAD.format(title="Status | Void Labs", css=CSS, meta='<meta name="description" content="Live status of Donut and Pixel.">') + page_shell(nav, body, foot, s["banner"])
+        f'<section><div class="wrap stat-top"><h1>Status{SQ}</h1>'
+        f'<div class="sum">{head}<span>{line}</span></div><div>{rows}</div><div class="ops-sec"><h2>Incidents</h2>{incs}</div></div></section>')
+    foot = site_foot('<a href="/">Home</a>')
+    return HEAD.format(title="Status | Void Labs", css=CSS, meta='<meta name="description" content="Live status of Donut and Pixel.">') + page_shell('<a href="/">Home</a>', body, foot, s["banner"])
 
 
 def updates_admin_page(csrf, msg=""):
@@ -1172,463 +1113,7 @@ def updates_admin_page(csrf, msg=""):
     return HEAD.format(title="Updates", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
 
 
-# ---------- member ranks (limits per rank; the Minecraft plugin reads /ranks.json) ----------
-RANKS_FILE = os.getenv("RANKS_FILE") or os.path.join(BASE, "ranks.json")
-_ranklock = threading.RLock()
-RANK_LIMITS = [("ah", "AH listings", 10), ("orders", "Max items per order", 2304), ("homes", "Homes", 1), ("tokens", "Bio Tokens per minute", 1)]
-RANK_ID_RE = re.compile(r"^[a-z0-9_]{2,16}$")
-RANK_COLOR_RE = re.compile(r"^&(?:[0-9a-fk-or]|#[0-9a-fA-F]{6})$")
-RANKS = {}  # id -> {"name","color","ah","orders","homes","tokens"}; "member" always exists
-
-
-def rank_default():
-    return {"name": "Member", "color": "&7", "ah": 10, "orders": 2304, "homes": 1, "tokens": 1}
-
-
-def rank_clean(r):
-    d = rank_default()
-    name = str(r.get("name", "")).strip()[:20]
-    d["name"] = name or d["name"]
-    c = str(r.get("color", "")).strip()
-    d["color"] = c if RANK_COLOR_RE.match(c) else "&7"
-    for k, _, df in RANK_LIMITS:
-        try:
-            d[k] = max(0, min(1000000, int(float(str(r.get(k, df)).strip()))))
-        except ValueError:
-            d[k] = df
-    return d
-
-
-def ranks_load():
-    try:
-        with open(RANKS_FILE, "r", encoding="utf-8") as f:
-            d = json.load(f)
-        if isinstance(d, dict):
-            RANKS.clear()
-            for k, v in d.items():
-                if RANK_ID_RE.match(k) and isinstance(v, dict):
-                    RANKS[k] = rank_clean(v)
-    except (OSError, ValueError):
-        pass
-    RANKS.setdefault("member", rank_default())
-
-
-def ranks_save():
-    tmp = RANKS_FILE + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(RANKS, f)
-        os.replace(tmp, RANKS_FILE)
-    except OSError:
-        pass
-
-
-def ranks_page(csrf, msg="", kind="ok"):
-    def fields(rid, r, new=False):
-        lim = "".join(
-            f'<div><label for="{k}-{rid}" style="margin-top:0">{lab}</label><input id="{k}-{rid}" name="{k}" type="number" min="0" max="1000000" value="{r[k]}" required></div>'
-            for k, lab, _ in RANK_LIMITS)
-        return (f'<div class="row"><div><label for="n-{rid}" style="margin-top:0">Display name</label><input id="n-{rid}" name="rname" maxlength="20" value="{E(r["name"])}" required></div>'
-                f'<div><label for="c-{rid}" style="margin-top:0">Colour <span class="hint">(&amp;c or &amp;#RRGGBB)</span></label><input id="c-{rid}" name="color" maxlength="9" value="{E(r["color"])}" required></div></div>'
-                f'<div class="row">{lim}</div>')
-    with _ranklock:
-        items = sorted(RANKS.items(), key=lambda kv: (kv[0] != "member", kv[0]))
-    rows = ""
-    for rid, r in items:
-        rm = "" if rid == "member" else f'<button class="btn ghost sm danger" type="submit" formaction="/admin/ranks/delete" formnovalidate onclick="return confirm(\'Delete this rank?\')">Delete</button>'
-        tag = " (default, everyone starts here)" if rid == "member" else ""
-        rows += (f'<li class="panel"><h3>{E(r["name"])} <span class="hint">{E(rid)}{tag}</span></h3><form method="post" action="/admin/ranks/save">'
-                 f'<input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="id" value="{E(rid)}">{fields(rid, r)}'
-                 f'<div style="display:flex;gap:var(--s2);margin-top:var(--s3)"><button class="btn sm" type="submit">Save</button>{rm}</div></form></li>')
-    m = f'<div class="msg {kind}" role="status">{E(msg)}</div>' if msg else ""
-    body = (
-        '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "ranks") +
-        '<main id="top"><div class="wrap"><div class="ops-top"><div><h1>Ranks</h1><p>Set what each rank gets. Applies to Oneblock and SMP (AH, orders, homes) and to all worlds for tokens per minute. Give a rank in game with /rank give name rank.</p></div></div>'
-        f'{m}<form method="post" action="/admin/ranks/save" class="panel"><input type="hidden" name="csrf" value="{csrf}"><fieldset style="margin:0"><legend>New rank</legend>'
-        '<label for="nid" style="margin-top:0">Rank id <span class="hint">(lowercase letters, numbers, _ ; used in /rank give)</span></label>'
-        '<input id="nid" name="id" required maxlength="16" pattern="[a-z0-9_]+" autocomplete="off" placeholder="vip">'
-        f'{fields("new", rank_default())}</fieldset><button class="btn" type="submit">Create rank</button></form>'
-        f'<div class="ops-sec"><h2>Ranks</h2><ul style="list-style:none;padding:0;display:grid;gap:var(--s4)">{rows}</ul></div></div></main></body></html>'
-    )
-    return HEAD.format(title="Ranks", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
-
-
-def users_page(csrf, msg="", kind="ok"):
-    def boxes(sel, pre):
-        return "".join(
-            f'<label class="chk"><input type="checkbox" name="tab" value="{k}"{" checked" if k in sel else ""}> {v}</label>'
-            for k, v in ADMIN_TABS)
-    with _userlock:
-        items = sorted(USERS.items())
-    rows = ""
-    for name, u in items:
-        rows += (
-            f'<li class="panel"><h3>{E(name)}</h3><form method="post" action="/admin/users/update"><input type="hidden" name="csrf" value="{csrf}">'
-            f'<input type="hidden" name="name" value="{E(name)}"><fieldset style="margin:0"><legend>Tabs this user can open</legend>{boxes(u["tabs"], name)}</fieldset>'
-            f'<label for="pw-{E(name)}">New password <span class="hint">(leave blank to keep it)</span></label>'
-            f'<input id="pw-{E(name)}" name="password" type="password" minlength="10" autocomplete="new-password">'
-            '<div style="display:flex;gap:var(--s2);margin-top:var(--s3)"><button class="btn sm" type="submit">Save</button>'
-            f'<button class="btn ghost sm danger" type="submit" formaction="/admin/users/delete" formnovalidate onclick="return confirm(\'Delete this user?\')">Delete user</button></div></form></li>')
-    listing = f'<ul style="list-style:none;padding:0;display:grid;gap:var(--s4)">{rows}</ul>' if rows else '<p class="note">No extra admins yet.</p>'
-    m = f'<div class="msg {kind}" role="status">{E(msg)}</div>' if msg else ""
-    body = (
-        '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "users") +
-        '<main id="top"><div class="wrap"><div class="ops-top"><div><h1>Users</h1><p>Create admins who can open only the tabs you tick. They cannot see the other tabs, the backup, or this page. Your own login always has full access.</p></div></div>'
-        f'{m}<form method="post" action="/admin/users/add" class="panel"><input type="hidden" name="csrf" value="{csrf}">'
-        '<fieldset style="margin:0"><legend>New admin</legend><div class="row"><div><label for="nu" style="margin-top:0">Username</label>'
-        '<input id="nu" name="name" required minlength="3" maxlength="24" pattern="[a-zA-Z0-9_\\-]+" autocomplete="off" placeholder="mod_alex"></div>'
-        '<div><label for="np" style="margin-top:0">Password <span class="hint">(10+ characters)</span></label>'
-        '<input id="np" name="password" type="password" required minlength="10" autocomplete="new-password"></div></div>'
-        f'<fieldset style="margin-top:var(--s3)"><legend>Tabs</legend>{boxes([], "new")}</fieldset></fieldset>'
-        '<button class="btn" type="submit">Create admin</button></form>'
-        f'<div class="ops-sec"><h2>Admins</h2>{listing}</div></div></main></body></html>'
-    )
-    return HEAD.format(title="Users", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
-
-
-PRICES_JS = r"""(function () {
-  "use strict";
-  var root = document.getElementById("pe");
-  if (!root) return;
-  var csrf = root.getAttribute("data-csrf");
-  var MARKUP = 3, RATIO = 0.25;
-  var data = null, mode = "oneblock", tab = "worth", filter = "", dirty = false, flash = null;
-
-  function el(tag, cls, text) {
-    var n = document.createElement(tag);
-    if (cls) n.className = cls;
-    if (text != null) n.textContent = text;
-    return n;
-  }
-  function plain(s) { return String(s).replace(/&[0-9a-fk-or]/gi, ""); }
-  function setDirty(v) { dirty = v; var s = document.getElementById("pe-state"); if (s) s.textContent = v ? "Unsaved changes" : ""; }
-  function money(n) { return "$" + Number(n).toLocaleString("en-US"); }
-  function worthOf(m, name) { var w = m.worth[name]; return typeof w === "number" ? w : 0; }
-  function autoSell(price) { var d = Math.floor(price * RATIO); if (d < 1 && price >= 3) d = 1; return d; }
-
-  function load() {
-    fetch("/admin/prices/data", { credentials: "same-origin", cache: "no-store" })
-      .then(function (r) { if (!r.ok) throw new Error("load failed"); return r.json(); })
-      .then(function (d) {
-        data = d;
-        var keys = Object.keys(data).filter(function (k) { return data[k] && typeof data[k] === "object" && data[k].worth; });
-        if (!keys.length) { data.oneblock = { worth: {}, categories: {} }; keys = ["oneblock"]; }
-        if (keys.indexOf(mode) < 0) mode = keys[0];
-        render();
-      })
-      .catch(function () { root.textContent = "Could not load prices. Reload the page."; });
-  }
-
-  function save() {
-    var btn = document.getElementById("pe-save");
-    btn.disabled = true;
-    fetch("/admin/prices/save", {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-CSRF": csrf },
-      body: JSON.stringify(data)
-    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
-      .then(function (res) {
-        btn.disabled = false;
-        flash = { ok: res.ok, text: res.j.msg || (res.ok ? "Saved." : "Could not save.") };
-        if (res.ok) { data = res.j.data || data; setDirty(false); }
-        render();
-      })
-      .catch(function () { btn.disabled = false; flash = { ok: false, text: "Could not reach the server." }; render(); });
-  }
-
-  function render() {
-    root.textContent = "";
-    var m = data[mode];
-
-    var top = el("div", "pe-top");
-    var modes = Object.keys(data).filter(function (k) { return data[k] && typeof data[k] === "object" && data[k].worth; });
-    if (modes.length > 1) {
-      var sel = el("select");
-      modes.forEach(function (k) { var o = el("option", null, k); o.value = k; if (k === mode) o.selected = true; sel.appendChild(o); });
-      sel.onchange = function () { mode = sel.value; tab = "worth"; render(); };
-      top.appendChild(sel);
-    }
-    var st = el("span", "pe-state", ""); st.id = "pe-state"; top.appendChild(st);
-    var sb = el("button", "btn", "Save changes"); sb.id = "pe-save"; sb.type = "button"; sb.onclick = save; top.appendChild(sb);
-    root.appendChild(top);
-    var msg = el("div", "msg " + (flash && !flash.ok ? "err" : "ok")); msg.id = "pe-msg"; msg.setAttribute("role", "status");
-    if (flash) msg.textContent = flash.text; else msg.hidden = true;
-    root.appendChild(msg);
-    setDirty(dirty);
-
-    var tabs = el("div", "pe-tabs");
-    function addTab(id, label) {
-      var b = el("button", "pe-tab", label); b.type = "button";
-      if (id === tab) b.setAttribute("aria-current", "true");
-      b.onclick = function () { tab = id; filter = ""; render(); };
-      tabs.appendChild(b);
-    }
-    addTab("worth", "Sell worth");
-    Object.keys(m.categories).forEach(function (id) { addTab("cat:" + id, plain(m.categories[id].name || id)); });
-    addTab("new", "+ Category");
-    root.appendChild(tabs);
-
-    if (tab === "new") return renderNew(m);
-    if (tab === "worth") return renderTable(m, m.worth, null);
-    var cid = tab.slice(4);
-    if (!m.categories[cid]) { tab = "worth"; return render(); }
-    renderCat(m, cid);
-  }
-
-  function renderNew(m) {
-    var p = el("div", "panel");
-    p.appendChild(el("p", "note", "Categories show up in /shop in this order. The shop menu fits 7."));
-    var id = el("input"); id.placeholder = "id (letters, numbers, _)"; id.maxLength = 24;
-    var nm = el("input"); nm.placeholder = "Name, colour codes allowed: &6&lTools"; nm.maxLength = 60;
-    var ic = el("input"); ic.placeholder = "Icon material, e.g. DIAMOND_PICKAXE"; ic.maxLength = 64;
-    var b = el("button", "btn", "Add category"); b.type = "button";
-    b.onclick = function () {
-      var k = id.value.trim().toLowerCase();
-      if (!/^[a-z0-9_]{1,24}$/.test(k) || m.categories[k]) return alert("Pick a new id with letters, numbers or _.");
-      if (Object.keys(m.categories).length >= 7) return alert("The shop menu only fits 7 categories.");
-      m.categories[k] = { name: nm.value.trim() || k, icon: (ic.value.trim() || "CHEST").toUpperCase(), items: {} };
-      tab = "cat:" + k; setDirty(true); render();
-    };
-    [id, nm, ic].forEach(function (x) { p.appendChild(x); });
-    p.appendChild(b);
-    root.appendChild(p);
-  }
-
-  function renderCat(m, cid) {
-    var c = m.categories[cid];
-    var head = el("div", "panel pe-cat");
-    var nm = el("input"); nm.value = c.name; nm.maxLength = 60; nm.setAttribute("aria-label", "Category name");
-    nm.oninput = function () { c.name = nm.value; setDirty(true); };
-    var ic = el("input"); ic.value = c.icon; ic.maxLength = 64; ic.setAttribute("aria-label", "Icon material");
-    ic.oninput = function () { c.icon = ic.value.trim().toUpperCase(); setDirty(true); };
-    var del = el("button", "btn ghost sm danger", "Delete category"); del.type = "button";
-    del.onclick = function () { if (confirm("Delete this category and all its items?")) { delete m.categories[cid]; tab = "worth"; setDirty(true); render(); } };
-    head.appendChild(nm); head.appendChild(ic); head.appendChild(del);
-    root.appendChild(head);
-    renderTable(m, c.items, m);
-  }
-
-  // items: name -> number. shopOf is set for shop categories: rows then have a Buy price and a Sell price.
-  function renderTable(m, items, shopOf) {
-    var bar = el("div", "pe-bar");
-    var f = el("input"); f.type = "search"; f.placeholder = "Filter items"; f.value = filter; f.setAttribute("aria-label", "Filter items");
-    bar.appendChild(f);
-    var count = el("span", "pe-count"); bar.appendChild(count);
-    root.appendChild(bar);
-
-    var list = el("div", "pe-list"); root.appendChild(list);
-    function rows() {
-      list.textContent = "";
-      if (shopOf) {
-        var hd = el("div", "pe-row pe-shop pe-head");
-        ["Item", "Buy price", "Sell price", "", ""].forEach(function (t) { hd.appendChild(el("span", null, t)); });
-        list.appendChild(hd);
-      }
-      var names = Object.keys(items).sort();
-      var shown = 0;
-      names.forEach(function (name) {
-        if (filter && name.toLowerCase().indexOf(filter) < 0) return;
-        shown++;
-        if (shown > 300) return;
-        var r = el("div", shopOf ? "pe-row pe-shop" : "pe-row");
-        r.appendChild(el("span", "pe-name", name));
-        var inp = el("input"); inp.type = "number"; inp.min = shopOf ? "1" : "0"; inp.step = shopOf ? "1" : "0.01"; inp.value = items[name];
-        inp.setAttribute("aria-label", (shopOf ? "Buy price for " : "Sell worth for ") + name);
-        r.appendChild(inp);
-        var sell = null, note = el("span", "pe-note");
-        if (shopOf) {
-          sell = el("input"); sell.type = "number"; sell.min = "0"; sell.step = "0.01"; sell.placeholder = "auto";
-          sell.setAttribute("aria-label", "Sell price for " + name);
-          var w0 = m.worth[name]; sell.value = typeof w0 === "number" ? w0 : "";
-          r.appendChild(sell);
-        }
-        function upd() {
-          if (!shopOf) { note.textContent = ""; return; }
-          var buy = parseFloat(inp.value);
-          if (!isFinite(buy)) { note.textContent = ""; return; }
-          var w = worthOf(m, name), min = Math.ceil(w * MARKUP);
-          if (w > 0 && buy < min) { note.textContent = "Buy must be at least " + MARKUP + "x sell: the plugin raises it to " + money(min); note.className = "pe-note warn"; }
-          else { note.className = "pe-note"; note.textContent = w > 0 ? "" : "Sell is auto: " + money(autoSell(buy)); }
-        }
-        inp.oninput = function () { var v = parseFloat(inp.value); if (isFinite(v) && v >= 0) { items[name] = shopOf ? Math.round(v) : v; setDirty(true); } upd(); };
-        if (sell) sell.oninput = function () {
-          var t = sell.value.trim();
-          if (t === "") delete m.worth[name];
-          else { var v = parseFloat(t); if (isFinite(v) && v >= 0) m.worth[name] = v; }
-          setDirty(true); upd();
-        };
-        upd();
-        var d = el("button", "btn ghost sm danger", "Remove"); d.type = "button";
-        d.onclick = function () { delete items[name]; setDirty(true); rows(); };
-        r.appendChild(note); r.appendChild(d);
-        list.appendChild(r);
-      });
-      count.textContent = shown + (shown > 300 ? " matches (showing 300, use the filter)" : " items");
-    }
-    f.oninput = function () { filter = f.value.trim().toLowerCase(); rows(); };
-    rows();
-
-    var add = el("div", "pe-add");
-    var an = el("input"); an.placeholder = "ITEM_NAME (Bukkit material, e.g. DIAMOND_BLOCK)"; an.maxLength = 64;
-    var ap = el("input"); ap.type = "number"; ap.placeholder = shopOf ? "Buy price" : "Price"; ap.min = "0"; ap.step = shopOf ? "1" : "0.01";
-    var asl = null;
-    if (shopOf) { asl = el("input"); asl.type = "number"; asl.placeholder = "Sell price (blank = auto)"; asl.min = "0"; asl.step = "0.01"; }
-    var ab = el("button", "btn sm", "Add item"); ab.type = "button";
-    ab.onclick = function () {
-      var n = an.value.trim().toUpperCase().replace(/\s+/g, "_"), v = parseFloat(ap.value);
-      if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(n)) return alert("Use the item name, like DIAMOND_BLOCK.");
-      if (!isFinite(v) || v < (shopOf ? 1 : 0)) return alert("Enter a price.");
-      items[n] = shopOf ? Math.round(v) : v;
-      if (asl && asl.value.trim() !== "") { var sv = parseFloat(asl.value); if (isFinite(sv) && sv >= 0) m.worth[n] = sv; }
-      an.value = ""; ap.value = ""; if (asl) asl.value = ""; setDirty(true); rows();
-    };
-    add.appendChild(an); add.appendChild(ap); if (asl) add.appendChild(asl); add.appendChild(ab);
-    root.appendChild(add);
-  }
-
-  window.addEventListener("beforeunload", function (e) { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
-  load();
-})();
-"""
-
-PRICES_CSS = """<style>
-.pe-top{display:flex;gap:var(--s3);align-items:center;justify-content:flex-end;margin-block:var(--s4);flex-wrap:wrap}
-.pe-state{color:var(--warn);font-size:.95rem;margin-right:auto}
-.pe-tabs{display:flex;gap:var(--s2);flex-wrap:wrap;border-bottom:1px solid var(--line);margin-bottom:var(--s4)}
-.pe-tab{background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);font:600 .95rem var(--body);padding:var(--s2) var(--s3);cursor:pointer}
-.pe-tab:hover{color:var(--text)}.pe-tab[aria-current]{color:var(--text);border-bottom-color:var(--violet)}
-.pe-bar{display:flex;gap:var(--s3);align-items:center;margin-bottom:var(--s3)}.pe-bar input{max-width:22rem}
-.pe-count{color:var(--muted);font-size:.9rem}
-.pe-shop{grid-template-columns:minmax(10rem,1.3fr) 7rem 7rem 1fr auto!important}
-.pe-head{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;padding-bottom:var(--s1)}
-.pe-row{display:grid;grid-template-columns:minmax(10rem,1.3fr) 8rem 1fr auto;gap:var(--s3);align-items:center;padding:var(--s2) 0;border-bottom:1px solid var(--line)}
-.pe-name{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.9rem;overflow-wrap:anywhere}
-.pe-note{color:var(--muted);font-size:.9rem}.pe-note.warn{color:var(--warn)}
-.pe-add,.pe-cat{display:flex;gap:var(--s3);flex-wrap:wrap;align-items:center;margin-top:var(--s4)}
-.pe-cat{margin-top:0;margin-bottom:var(--s4)}.pe-add input,.pe-cat input{flex:1 1 12rem}
-@media(max-width:640px){.pe-row{grid-template-columns:1fr 6rem auto}.pe-shop{grid-template-columns:1fr 5rem 5rem auto!important}.pe-head span:nth-child(n+4){display:none}.pe-note{grid-column:1/-1;order:5}}
-</style>"""
-
-
-def prices_page(csrf):
-    body = (
-        '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "prices") +
-        '<main id="top"><div class="wrap"><div class="ops-top"><div><h1>Game prices</h1>'
-        '<p>On each shop tab, <strong>Buy price</strong> is what <code>/shop</code> charges and <strong>Sell price</strong> is what <code>/sell</code> pays (leave it blank for auto). The Sell worth tab is for items that are not in the shop. The Minecraft server downloads this every few minutes '
-        '(or run <code>/mobzone prices</code> in game). A buy price is always raised to at least 3&times; the sell price, and a blank sell price pays 25% of the buy price.</p></div></div>'
-        f'<div id="pe" data-csrf="{csrf}"><p class="note">Loading&hellip;</p></div>'
-        '<script src="/admin/prices.js" defer></script></div></main></body></html>'
-    )
-    return HEAD.format(title="Prices", css=CSS, meta='<meta name="robots" content="noindex,nofollow">' + PRICES_CSS) + body
-
-
-# ---------- zombie skins (read by the Minecraft plugin, uploaded in /admin/skins) ----------
-SKINS_STORE = os.getenv("SKINS_DIR") or os.path.join(BASE, "skins-store")
-SITE_URL = (os.getenv("SITE_URL") or "").rstrip("/")
-MAX_SKIN = 100 * 1024
-# (MythicMobs internal name, label) in the order they appear in the game
-SKIN_ZOMBIES = [("Walker", "Walker"), ("Runner", "Runner"), ("Brute", "Brute"), ("Cook", "Cook"), ("Stoker", "Stoker"),
-                ("Exploder", "Exploder"), ("Spitter", "Spitter"), ("Scientist", "Scientist"), ("Guard", "Guard"),
-                ("Crawler", "Crawler"), ("Mutant", "Mutant"), ("Hazmat", "Hazmat"), ("Elite", "Elite")]
-SKIN_BOSSES = [("BOSS_wardenzombie", "Warden Zombie"), ("BOSS_headchef", "Head Chef"), ("BOSS_foreman", "Foreman"),
-               ("BOSS_chiefsurgeon", "Chief Surgeon"), ("BOSS_brutus", "Warden Brutus"), ("BOSS_sludgeking", "Sludge King"),
-               ("BOSS_drmortem", "Dr. Mortem"), ("BOSS_specimen0", "Specimen Zero"), ("BOSS_patientzero", "Patient Zero")]
-SKIN_NAMES = {k for k, _ in SKIN_ZOMBIES + SKIN_BOSSES}
-
-
-def skin_path(name):
-    return os.path.join(SKINS_STORE, name + ".png") if name in SKIN_NAMES else None
-
-
-def skin_version(name):
-    p = skin_path(name)
-    try:
-        return int(os.path.getmtime(p)) if p else 0
-    except OSError:
-        return 0
-
-
-def skin_check(data):
-    """A Minecraft skin is a PNG that is 64x64 (or the old 64x32)."""
-    if len(data) < 33 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
-        return "That is not a PNG file."
-    w, h = int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
-    if w != 64 or h not in (32, 64):
-        return f"A skin must be 64x64 (or 64x32). That image is {w}x{h}."
-    return None
-
-
-def skins_page(csrf, msg="", kind="ok"):
-    def card(key, label):
-        has = skin_version(key)
-        pic = (f'<img src="/skins/{key}.png?v={has}" alt="{E(label)} skin" width="128" height="128" style="image-rendering:pixelated;background:var(--surface-2,#222);border-radius:8px">'
-               if has else '<div class="none">No skin yet</div>')
-        rm = (f'<form method="post" action="/admin/skins/remove" style="margin-top:var(--s2)"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="key" value="{key}">'
-              '<button class="btn ghost sm danger" type="submit">Remove</button></form>') if has else ""
-        return (f'<div class="panel sk"><h3>{E(label)}</h3>{'' if key == label else '<p class="hint">' + E(key) + '</p>'}{pic}'
-                f'<form method="post" action="/admin/skins/upload" enctype="multipart/form-data" style="margin-top:var(--s3)">'
-                f'<input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="key" value="{key}">'
-                f'<input id="f-{key}" type="file" name="file" accept="image/png" required aria-label="Skin file for {E(label)}">'
-                f'<button class="btn sm" type="submit" style="margin-top:var(--s2)">{"Replace" if has else "Upload"}</button></form>{rm}</div>')
-    grid = lambda items: '<div class="skgrid">' + "".join(card(k, l) for k, l in items) + "</div>"
-    m = f'<div class="msg {kind}" role="{"alert" if kind == "err" else "status"}">{E(msg)}</div>' if msg else ""
-    body = (
-        '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "skins") +
-        '<main id="top"><div class="wrap"><div class="ops-top"><div><h1>Zombie Skins</h1><p>Upload a Minecraft skin (PNG, 64x64) for each zombie and boss. The game server downloads them and applies them to the zombies. A zombie without a skin keeps its normal look.</p></div></div>'
-        f'{m}<div class="ops-sec"><h2>Zombies</h2>{grid(SKIN_ZOMBIES)}</div><div class="ops-sec"><h2>Bosses</h2>{grid(SKIN_BOSSES)}</div></div></main></body></html>'
-    )
-    return HEAD.format(title="Zombie Skins", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
-
-
-# ---------- resource pack (players download it when they join: set resource-pack in server.properties) ----------
-PACK_STORE = os.getenv("PACK_DIR") or os.path.join(BASE, "pack-store")
-PACK_DEFAULT = os.path.join(BASE, "pack.default.zip")
-MAX_PACK = 10 * 1024 * 1024
-
-
-def pack_file():
-    p = os.path.join(PACK_STORE, "pack.zip")
-    return p if os.path.isfile(p) else (PACK_DEFAULT if os.path.isfile(PACK_DEFAULT) else None)
-
-
-def pack_info():
-    p = pack_file()
-    if not p:
-        return None
-    with open(p, "rb") as fh:
-        data = fh.read()
-    return {"sha1": hashlib.sha1(data).hexdigest(), "size": len(data), "custom": p != PACK_DEFAULT}
-
-
-def pack_ok(data):
-    import io, zipfile
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as z:
-            names = z.namelist()
-            return "pack.mcmeta" in names and sum(i.file_size for i in z.infolist()) < 60 * 1024 * 1024
-    except (zipfile.BadZipFile, OSError):
-        return False
-
-
-def pack_card(csrf, base):
-    info = pack_info()
-    if not info:
-        return '<div class="panel"><h2>Resource pack</h2><p class="hint">No pack on the server.</p></div>'
-    url = (SITE_URL or base) + "/pack.zip"
-    reset = (f'<form method="post" action="/admin/media/packreset" style="margin-top:var(--s2)"><input type="hidden" name="csrf" value="{csrf}">'
-             '<button class="btn ghost sm danger" type="submit">Go back to the built-in pack</button></form>') if info["custom"] else ""
-    return (
-        '<div class="panel" style="grid-column:1/-1"><h2>Resource pack</h2>'
-        '<p class="hint">Custom Prison Blade and armor textures. Players download it when they join. Put these two lines in server.properties on the game server, then restart:</p>'
-        f'<pre style="white-space:pre-wrap;overflow-wrap:anywhere;margin:var(--s2) 0">resource-pack={E(url)}\nresource-pack-sha1={info["sha1"]}</pre>'
-        f'<p class="hint">{"Your uploaded pack" if info["custom"] else "Built-in pack"}, {info["size"] // 1024} KB. If you upload a new pack, the sha1 changes, so update that line too.</p>'
-        f'<form method="post" action="/admin/media/pack" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{csrf}">'
-        '<label for="f-pack" style="margin-top:0">Replace pack <span class="hint">(.zip with pack.mcmeta, up to 10 MB)</span></label>'
-        '<input id="f-pack" type="file" name="file" accept=".zip,application/zip" required>'
-        f'<button class="btn" type="submit" style="margin-top:var(--s3)">Upload pack</button></form>{reset}</div>')
-
-
-def media_page(csrf, msg="", kind="ok", base=""):
+def media_page(csrf, msg="", kind="ok"):
     cards = ""
     for key, name in (("donut", "Donut"), ("pixel", "Pixel")):
         u = shot_url(key)
@@ -1646,7 +1131,7 @@ def media_page(csrf, msg="", kind="ok", base=""):
     body = (
         '<body><a class="skip" href="#top">Skip to content</a>' + admin_head(csrf, "media") +
         f'<main id="top"><div class="wrap"><div class="ops-top"><div><h1>Media</h1><p>The screenshots shown for Donut and Pixel. Without one, the site shows a simple mark instead.</p></div></div>{m}'
-        f'<div class="mgrid ops-sec">{cards}{pack_card(csrf, base or getattr(_ctx, 'base', ''))}</div></div></main></body></html>'
+        f'<div class="mgrid ops-sec">{cards}</div></div></main></body></html>'
     )
     return HEAD.format(title="Media", css=CSS, meta='<meta name="robots" content="noindex,nofollow">') + body
 
@@ -1711,14 +1196,14 @@ def ops_page(s, csrf, msg=""):
 
 
 NOT_ENABLED = HEAD.format(title="Admin disabled", css=CSS, meta='<meta name="robots" content="noindex">') + (
-    f'<body><main class="gate"><div><a class="mark" href="/">{LOGO}Void Labs</a><div class="panel"><h1>Admin is off</h1>'
+    f'<body><main class="gate"><div><a class="mark" href="/">{LOGO}<span>Void Labs</span></a><div class="panel"><h1>Admin is off</h1>'
     "<p>Set an <strong>ADMIN_PASSWORD</strong> environment variable (at least 10 characters) and restart the server to turn it on.</p>"
     "</div></div></main></body></html>"
 )
 
 NOT_FOUND = HEAD.format(title="Not found", css=CSS, meta="") + (
-    f'<body><header class="site-head"><div class="wrap"><a class="mark" href="/">{LOGO}Void Labs</a></div></header>'
-    '<main class="lost" id="top"><div class="wrap"><h1>404</h1><p>Nothing here.</p>'
+    '<body>' + site_head('<a href="/">Home</a>') +
+    '<main class="lost" id="top"><div class="wrap"><h1>404' + SQ + '</h1><p>Nothing here.</p>'
     f'<a class="btn" href="/">Go home{ARROW}</a></div></main></body></html>'
 )
 
@@ -1772,23 +1257,11 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def session(self):
-        _ctx.user = None
-        _ctx.base = self.base()
         for part in (self.headers.get("Cookie") or "").split(";"):
             k, _, v = part.strip().partition("=")
-            if k == "vl_session":
-                u = check_session(v)
-                if u:
-                    _ctx.user = u
-                    return v
+            if k == "vl_session" and check_session(v):
+                return v
         return None
-
-    def no_access(self, tok):
-        # send people to the first tab they are allowed to use, or tell them they have none
-        for k, _ in ADMIN_TABS:
-            if can(k):
-                return self.redirect(TAB_HREF[k])
-        return self.send(403, "You don't have access to any admin tabs. Ask the owner.", "text/plain", private=True)
 
     def cookie(self, value, max_age):
         flags = f"vl_session={value}; Path=/admin; HttpOnly; SameSite=Strict; Max-Age={max_age}"
@@ -1833,36 +1306,6 @@ class Handler(BaseHTTPRequestHandler):
                          args=(f"New message from {name or 'someone'} ({reply}):\n{msg[:400]}",)).start()
         return self.redirect("/?sent=1#contact")
 
-    def prices_save_req(self):
-        def reply(code, ok, msg, data=None):
-            body = {"ok": ok, "msg": msg}
-            if data is not None:
-                body["data"] = data
-            return self.send(code, json.dumps(body), "application/json", private=True)
-        tok = self.session()
-        if not tok:
-            return reply(401, False, "Your session ended. Log in again.")
-        if not same(self.headers.get("X-CSRF", ""), csrf_for(tok)):
-            return reply(403, False, "Bad request token. Reload the page.")
-        try:
-            n = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            n = 0
-        if n <= 0 or n > 2000000:
-            return reply(413, False, "That file is too big.")
-        try:
-            doc = json.loads(self.rfile.read(n).decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            return reply(400, False, "That is not valid JSON.")
-        clean, err = prices_clean(doc)
-        if err:
-            return reply(400, False, err)
-        try:
-            prices_save(clean)
-        except OSError:
-            return reply(500, False, "Could not write the prices file on the server.")
-        return reply(200, True, "Saved. The game server picks it up within a few minutes, or run /mobzone prices.", clean)
-
     def media_upload(self):
         tok = self.session()
         if not tok:
@@ -1898,67 +1341,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(500, media_page(csrf_for(tok), "Could not save the file on the server.", "err"), private=True)
         return self.send(200, media_page(csrf_for(tok), f"{key.title()} screenshot updated."), private=True)
 
-    def base(self):
-        proto = "https" if (self.secure() or self.headers.get("X-Forwarded-Proto") == "https") else "http"
-        return proto + "://" + (self.headers.get("Host") or "localhost")
-
-    def pack_upload(self):
-        tok = self.session()
-        if not tok:
-            return self.redirect("/admin")
-        try:
-            n = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            n = 0
-        ctype = self.headers.get("Content-Type", "")
-        if n <= 0 or n > MAX_PACK + 20000 or not ctype.startswith("multipart/form-data"):
-            return self.send(413, media_page(csrf_for(tok), "That file is too big. The limit is 10 MB.", "err", self.base()), private=True)
-        fields, files = parse_multipart(ctype, self.rfile.read(n))
-        if not same(fields.get("csrf", ""), csrf_for(tok)):
-            return self.send(403, "Bad request token. Reload the page and try again.", "text/plain")
-        data = files.get("file", b"")
-        if not data or len(data) > MAX_PACK or not pack_ok(data):
-            return self.send(400, media_page(csrf_for(tok), "That is not a resource pack. It must be a .zip with pack.mcmeta at the top.", "err", self.base()), private=True)
-        try:
-            os.makedirs(PACK_STORE, exist_ok=True)
-            dest = os.path.join(PACK_STORE, "pack.zip")
-            with open(dest + ".tmp", "wb") as fh:
-                fh.write(data)
-            os.replace(dest + ".tmp", dest)
-        except OSError:
-            return self.send(500, media_page(csrf_for(tok), "Could not save the file on the server.", "err", self.base()), private=True)
-        return self.send(200, media_page(csrf_for(tok), "Pack updated. Copy the new sha1 into server.properties.", "ok", self.base()), private=True)
-
-    def skin_upload(self):
-        tok = self.session()
-        if not tok:
-            return self.redirect("/admin")
-        try:
-            n = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            n = 0
-        ctype = self.headers.get("Content-Type", "")
-        if n <= 0 or n > MAX_SKIN + 20000 or not ctype.startswith("multipart/form-data"):
-            return self.send(413, skins_page(csrf_for(tok), "That file is too big. A skin is under 100 KB.", "err"), private=True)
-        fields, files = parse_multipart(ctype, self.rfile.read(n))
-        if not same(fields.get("csrf", ""), csrf_for(tok)):
-            return self.send(403, "Bad request token. Reload the page and try again.", "text/plain")
-        key, data = fields.get("key", ""), files.get("file", b"")
-        if key not in SKIN_NAMES or not data or len(data) > MAX_SKIN:
-            return self.send(400, skins_page(csrf_for(tok), "Choose a PNG skin under 100 KB.", "err"), private=True)
-        err = skin_check(data)
-        if err:
-            return self.send(400, skins_page(csrf_for(tok), err, "err"), private=True)
-        try:
-            os.makedirs(SKINS_STORE, exist_ok=True)
-            dest = skin_path(key)
-            with open(dest + ".tmp", "wb") as fh:
-                fh.write(data)
-            os.replace(dest + ".tmp", dest)
-        except OSError:
-            return self.send(500, skins_page(csrf_for(tok), "Could not save the file on the server.", "err"), private=True)
-        return self.send(200, skins_page(csrf_for(tok), f"Skin saved for {key}."), private=True)
-
     # routes
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
@@ -1978,14 +1360,6 @@ class Handler(BaseHTTPRequestHandler):
             if ext in SHOT_TYPES and name in {k + e for k in ("donut", "pixel") for e in SHOT_TYPES} and shot_file(name[:-len(ext)]) == name:
                 with open(os.path.join(SHOTS_DIR, name), "rb") as fh:
                     return self.send(200, fh.read(), SHOT_TYPES[ext], extra=[("Cache-Control", "public, max-age=300")])
-        if path.startswith("/admin") and ADMIN_ON:
-            tok = self.session()
-            if tok and not allowed(path):
-                if path == "/admin":
-                    return self.no_access(tok)
-                return self.send(403, "You don't have access to this tab.", "text/plain", private=True)
-            if tok and path == "/admin/users":
-                return self.send(200, users_page(csrf_for(tok)), private=True)
         if path == "/admin":
             if not ADMIN_ON:
                 return self.send(503, NOT_ENABLED, private=True)
@@ -2001,7 +1375,7 @@ class Handler(BaseHTTPRequestHandler):
             tok = self.session()
             if not tok:
                 return self.send(200, admin_login_page(), private=True)
-            return self.send(200, (updates_admin_page(csrf_for(tok)) if path == "/admin/updates" else media_page(csrf_for(tok), base=self.base())), private=True)
+            return self.send(200, (updates_admin_page if path == "/admin/updates" else media_page)(csrf_for(tok)), private=True)
         if path in ("/admin/inbox", "/admin/backup"):
             if not ADMIN_ON:
                 return self.send(503, NOT_ENABLED, private=True)
@@ -2011,73 +1385,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/admin/inbox":
                 return self.send(200, inbox_page(csrf_for(tok)), private=True)
             with _msglock:
-                dump = {"exported": int(time.time()), "settings": load(), "messages": list(MSGS), "prices": dict(PRICES)}
+                dump = {"exported": int(time.time()), "settings": load(), "messages": list(MSGS)}
             return self.send(200, json.dumps(dump, indent=2), "application/json",
                              extra=[("Content-Disposition", 'attachment; filename="void-labs-backup.json"')], private=True)
-        if path.startswith("/skins/") and path.endswith(".png"):
-            p = skin_path(path[7:-4])
-            if p and os.path.isfile(p):
-                with open(p, "rb") as fh:
-                    return self.send(200, fh.read(), "image/png", extra=[("Cache-Control", "public, max-age=300")])
-            return self.send(404, NOT_FOUND)
-        if path == "/pack.zip":
-            p = pack_file()
-            if not p:
-                return self.send(404, NOT_FOUND)
-            with open(p, "rb") as fh:
-                return self.send(200, fh.read(), "application/zip", extra=[("Cache-Control", "public, max-age=60")])
-        if path == "/skins.json":
-            key = (self.headers.get("Authorization") or "")[7:] if (self.headers.get("Authorization") or "").startswith("Bearer ") else (parse_qs(urlparse(self.path).query).get("key", [""])[0])
-            if PRICES_KEY and not same(key, PRICES_KEY):
-                return self.send(403, "Forbidden", "text/plain", private=True)
-            host = SITE_URL or (("https://" if self.secure() or self.headers.get("X-Forwarded-Proto") == "https" else "http://") + (self.headers.get("Host") or "localhost"))
-            out = {"version": 1, "updated": int(time.time()), "skins": {}}
-            for k in sorted(SKIN_NAMES):
-                v = skin_version(k)
-                if v:
-                    out["skins"][k] = f"{host}/skins/{k}.png?v={v}"
-            return self.send(200, json.dumps(out), "application/json", private=True)
-        if path == "/admin/skins":
-            if not ADMIN_ON:
-                return self.send(503, NOT_ENABLED, private=True)
-            tok = self.session()
-            if not tok:
-                return self.send(200, admin_login_page(), private=True)
-            return self.send(200, skins_page(csrf_for(tok)), private=True)
-        if path == "/ranks.json":
-            key = (self.headers.get("Authorization") or "")[7:] if (self.headers.get("Authorization") or "").startswith("Bearer ") else (parse_qs(urlparse(self.path).query).get("key", [""])[0])
-            if PRICES_KEY and not same(key, PRICES_KEY):
-                return self.send(403, "Forbidden", "text/plain", private=True)
-            with _ranklock:
-                dump = json.dumps({"version": 1, "ranks": RANKS})
-            return self.send(200, dump, "application/json", private=True)
-        if path == "/admin/ranks":
-            if not ADMIN_ON:
-                return self.send(503, NOT_ENABLED, private=True)
-            tok = self.session()
-            if not tok:
-                return self.send(200, admin_login_page(), private=True)
-            return self.send(200, ranks_page(csrf_for(tok)), private=True)
-        if path == "/prices.json":
-            key = (self.headers.get("Authorization") or "")[7:] if (self.headers.get("Authorization") or "").startswith("Bearer ") else (parse_qs(urlparse(self.path).query).get("key", [""])[0])
-            if PRICES_KEY and not same(key, PRICES_KEY):
-                return self.send(403, "Forbidden", "text/plain", private=True)
-            with _pricelock:
-                dump = json.dumps(PRICES)
-            return self.send(200, dump, "application/json", private=True)
-        if path in ("/admin/prices", "/admin/prices.js", "/admin/prices/data"):
-            if not ADMIN_ON:
-                return self.send(503, NOT_ENABLED, private=True)
-            tok = self.session()
-            if not tok:
-                return self.send(200, admin_login_page(), private=True)
-            if path == "/admin/prices":
-                return self.send(200, prices_page(csrf_for(tok)), private=True)
-            if path == "/admin/prices.js":
-                return self.send(200, PRICES_JS, "text/javascript; charset=utf-8", private=True)
-            with _pricelock:
-                dump = json.dumps(PRICES)
-            return self.send(200, dump, "application/json", private=True)
         if path == "/admin/ops":
             if not ADMIN_ON:
                 return self.send(503, NOT_ENABLED, private=True)
@@ -2098,20 +1408,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.contact(form)
         if not path.startswith("/admin") or not ADMIN_ON:
             return self.send(404, "Not found", "text/plain")
-        if path not in ("/admin/login", "/admin/logout"):
-            _t = self.session()
-            if _t and not allowed(path):
-                if path == "/admin/prices/save":
-                    return self.send(403, json.dumps({"ok": False, "msg": "No access to Prices."}), "application/json", private=True)
-                return self.send(403, "You don't have access to this tab.", "text/plain", private=True)
         if path == "/admin/media/upload":
             return self.media_upload()
-        if path == "/admin/skins/upload":
-            return self.skin_upload()
-        if path == "/admin/media/pack":
-            return self.pack_upload()
-        if path == "/admin/prices/save":
-            return self.prices_save_req()
         form = self.form()
         if form is None:
             return self.send(413, "Too large", "text/plain")
@@ -2127,18 +1425,10 @@ class Handler(BaseHTTPRequestHandler):
             if until > now:
                 return self.send(429, admin_login_page("Too many attempts. Try again in a few minutes."), private=True)
             u, p = form.get("username", [""])[0], form.get("password", [""])[0]
-            who = None
-            if same(u, ADMIN_USER) and same(p, ADMIN_PASS):
-                who = "*"
-            else:
-                rec = USERS.get(u.strip().lower())
-                if rec and hmac.compare_digest(user_hash(p, rec["salt"]), rec["hash"]):
-                    who = u.strip().lower()
-                elif not rec:
-                    user_hash(p, "00" * 16)  # keep timing similar for unknown names
-            if who:
+            ok_u, ok_p = same(u, ADMIN_USER), same(p, ADMIN_PASS)
+            if ok_u and ok_p:
                 _fails.pop(ip, None)
-                return self.redirect("/admin", [self.cookie(make_session(who), SESSION_TTL)])
+                return self.redirect("/admin", [self.cookie(make_session(), SESSION_TTL)])
             count += 1
             _fails[ip] = (count, now + 300 if count >= 5 else 0)
             time.sleep(1)
@@ -2158,59 +1448,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, admin_page(clean, csrf_for(tok), err, "err"), private=True)
             save(clean)
             return self.send(200, admin_page(clean, csrf_for(tok), "Saved. Your changes are live.", "ok"), private=True)
-        if path in ("/admin/users/add", "/admin/users/update", "/admin/users/delete"):
-            name = form.get("name", [""])[0].strip().lower()
-            pw = form.get("password", [""])[0]
-            tabs = [t for t in form.get("tab", []) if t in TAB_KEYS]
-            page = lambda m, k="ok": self.send(200 if k == "ok" else 400, users_page(csrf_for(tok), m, k), private=True)
-            if path == "/admin/users/add":
-                if not USER_RE.match(name) or name == ADMIN_USER.lower():
-                    return page("Username must be 3 to 24 letters, numbers, - or _, and different from the owner.", "err")
-                if len(pw) < 10:
-                    return page("Password must be at least 10 characters.", "err")
-                with _userlock:
-                    if name in USERS or len(USERS) >= 50:
-                        return page("That username is taken, or there are too many users.", "err")
-                    salt = secrets.token_hex(16)
-                    USERS[name] = {"salt": salt, "hash": user_hash(pw, salt), "tabs": tabs}
-                    users_save()
-                return page(f"Created {name}." + ("" if tabs else " They have no tabs yet, so tick some and save."))
-            with _userlock:
-                if name not in USERS:
-                    return page("That user doesn't exist.", "err")
-                if path == "/admin/users/delete":
-                    del USERS[name]
-                    users_save()
-                    return page(f"Deleted {name}. They are logged out.")
-                if pw and len(pw) < 10:
-                    return page("Password must be at least 10 characters.", "err")
-                USERS[name]["tabs"] = tabs
-                if pw:
-                    salt = secrets.token_hex(16)
-                    USERS[name].update(salt=salt, hash=user_hash(pw, salt))
-                users_save()
-            return page(f"Saved {name}.")
-        if path in ("/admin/ranks/save", "/admin/ranks/delete"):
-            rid = form.get("id", [""])[0].strip().lower()
-            page = lambda m, k="ok": self.send(200 if k == "ok" else 400, ranks_page(csrf_for(tok), m, k), private=True)
-            if not RANK_ID_RE.match(rid):
-                return page("Rank id must be 2 to 16 lowercase letters, numbers or _.", "err")
-            if path == "/admin/ranks/delete":
-                if rid == "member":
-                    return page("The default Member rank can't be deleted.", "err")
-                with _ranklock:
-                    RANKS.pop(rid, None)
-                    ranks_save()
-                return page(f"Deleted {rid}.")
-            col = form.get("color", [""])[0].strip()
-            if not RANK_COLOR_RE.match(col):
-                return page("Colour must look like &c or &#RRGGBB.", "err")
-            with _ranklock:
-                if rid not in RANKS and len(RANKS) >= 40:
-                    return page("Too many ranks.", "err")
-                RANKS[rid] = rank_clean({"name": form.get("rname", [""])[0], "color": col, **{k: form.get(k, [""])[0] for k, _, _ in RANK_LIMITS}})
-                ranks_save()
-            return page(f"Saved {rid}.")
         if path == "/admin/updates/add":
             title, text, tag = (form.get(k, [""])[0].replace("\r\n", "\n").strip() for k in ("title", "text", "tag"))
             if not title or len(title) > 80 or len(text) > 400 or tag not in UPD_TAGS:
@@ -2226,21 +1463,6 @@ class Handler(BaseHTTPRequestHandler):
                 UPDATES[:] = [u for u in UPDATES if u["id"] != ident]
             upd_save()
             return self.send(200, updates_admin_page(csrf_for(tok), "Deleted."), private=True)
-        if path == "/admin/skins/remove":
-            key = form.get("key", [""])[0]
-            if key not in SKIN_NAMES:
-                return self.send(400, "Bad request", "text/plain")
-            try:
-                os.remove(skin_path(key))
-            except OSError:
-                pass
-            return self.send(200, skins_page(csrf_for(tok), f"Skin removed for {key}."), private=True)
-        if path == "/admin/media/packreset":
-            try:
-                os.remove(os.path.join(PACK_STORE, "pack.zip"))
-            except OSError:
-                pass
-            return self.send(200, media_page(csrf_for(tok), "Back to the built-in pack. Copy the new sha1 into server.properties.", "ok", self.base()), private=True)
         if path == "/admin/media/remove":
             key = form.get("key", [""])[0]
             if key not in ("donut", "pixel"):
@@ -2286,9 +1508,6 @@ if __name__ == "__main__":
         print("NOTE: SESSION_SECRET missing or under 16 chars. Using a random key; logins reset on restart.", flush=True)
     msgs_load()
     upd_load()
-    prices_load()
-    users_load()
-    ranks_load()
     if MONITOR_INTERVAL > 0:
         threading.Thread(target=monitor_loop, daemon=True).start()
     else:

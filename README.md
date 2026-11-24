@@ -23,15 +23,12 @@
 - **Updates:** `/admin/updates` publishes short dated notes. The latest five show on the home page (section and nav link appear only when there is at least one). Stored in `updates.json` (or `UPDATES_FILE`).
 - **Media:** `/admin/media` uploads or removes the Donut and Pixel screenshots (PNG, JPG or WebP, up to 5 MB, checked by file signature). Files are written to `shots/`. If you redeploy from git, keep that folder or re-upload.
 
-## Game prices (admin)
+## Design system
 
-`/admin/prices` edits the Minecraft server's sell worth and shop prices (Oneblock). The game plugin downloads `/prices.json` every few minutes, so edits go live in game without touching the server files.
+The site is styled entirely from the `CSS` string in `main.py` (no build step). Fonts load from Google Fonts with system fallbacks.
 
-- **Protect the download:** set `PRICES_KEY` (any long random string). `/prices.json` then needs `Authorization: Bearer <key>` or `?key=<key>`. Put the same key in the plugin config as `economy.prices-key`.
-- **Starting values:** `prices.default.json` is used until the first save. Saved prices live in `prices.json` (or `PRICES_FILE`) and are included in Settings → Download backup.
-- **Rules the game plugin enforces:** a shop price is raised to at least 3x the item's sell worth; items with no worth sell for 25% of their shop price. The editor warns you when a price is too low.
-- Up to 7 shop categories (the in-game menu fits 7).
-
-## Extra admins (Users tab)
-
-The owner (`ADMIN_USERNAME` / `ADMIN_PASSWORD`) sees a **Users** tab. Create admins there and tick the tabs each may open (Settings, Monitor, Inbox, Updates, Prices, Media). They only see and can use those tabs. The backup and the Users page are owner-only. Users are stored in `users.json` (salted PBKDF2 hashes), or the path in `USERS_FILE`.
+- **Palette:** paper `#eeeae0`, ink `#12110e`, one signal colour `#ff4d1a`. Donut and Pixel keep their own brand colours (amber `#f5a524`, green `#2ed47a`) as the slab behind each screenshot. Status colours (ok, warn, bad) are always paired with a shape and a word.
+- **Type:** Archivo (variable width, condensed for display) for text, JetBrains Mono for labels and data. Mono labels are never smaller than 12px.
+- **Rules:** 1.5px ink lines carry structure. No radius, shadows or gradients. The orange square (`.sq`) ends headings.
+- **Motion:** headline reveal, hover wipe on the product board, scroll reveal on screenshots, a UTC dial. All of it is off under `prefers-reduced-motion`; content is visible without JS.
+- **Delete buttons** (`button.danger`) ask for confirmation through `/app.js`.
